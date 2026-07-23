@@ -1,0 +1,16 @@
+{
+  "name": "tianshu-bridge-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tianshu Bridge — native desktop tray app (Tauri). Bundles the local-bridge as a Node sidecar.",
+  "type": "module",
+  "scripts": {
+    "payload": "node scripts/prepare-payload.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

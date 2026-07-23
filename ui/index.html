@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tianshu Bridge</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #6b7280;
+        --border: #d1d5db;
+        --accent: #2563eb;
+        --ok: #16a34a;
+        --off: #9ca3af;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e1e;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --border: #3f3f46;
+          --accent: #3b82f6;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+      }
+      .wrap { padding: 16px 18px; }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 2px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .status { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+      .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+      .dot.on { background: var(--ok); }
+      label { display: block; margin: 10px 0 3px; font-weight: 600; }
+      input[type="text"], input[type="password"], select {
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+      }
+      .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+      .row input[type="checkbox"] { width: 16px; height: 16px; }
+      .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+      .sub { margin-left: 22px; }
+      .actions { display: flex; gap: 8px; margin-top: 18px; }
+      button {
+        flex: 1;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .startstop { margin-bottom: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>⚡ Tianshu Bridge</h1>
+      <div class="status"><span id="dot" class="dot"></span> <span id="statusText">Stopped</span></div>
+
+      <div class="startstop actions">
+        <button id="startBtn" class="primary">Start</button>
+        <button id="stopBtn">Stop</button>
+      </div>
+
+      <label for="server">Server URL</label>
+      <input id="server" type="text" placeholder="wss://tianshu.example.com/ws" />
+
+      <label for="token">Token</label>
+      <input id="token" type="password" placeholder="(from the Local Bridge panel)" />
+
+      <label for="device">Device (optional)</label>
+      <input id="device" type="text" placeholder="hostname" />
+
+      <div class="row"><input id="browser" type="checkbox" /><label for="browser" style="margin:0">Expose browser tools</label></div>
+      <div class="sub">
+        <label for="engine">Browser engine</label>
+        <select id="engine">
+          <option value="own">own (your Chrome)</option>
+          <option value="stealth">stealth (cloakbrowser)</option>
+        </select>
+        <div class="row"><input id="headless" type="checkbox" /><label for="headless" style="margin:0">Headless (no window)</label></div>
+      </div>
+
+      <div class="row"><input id="shell" type="checkbox" /><label for="shell" style="margin:0">Expose shell (exec + file sync)</label></div>
+      <div class="hint">Runs commands on this machine, jailed to a fixed root.</div>
+
+      <div class="actions">
+        <button id="saveBtn" class="primary">Save</button>
+        <button id="hideBtn">Close</button>
+      </div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+# Rust / Tauri
+/src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Bundled bridge payload (fetched/built at CI time, not committed)
+/src-tauri/resources/bridge/
+/src-tauri/binaries/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
