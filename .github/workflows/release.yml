@@ -60,14 +60,40 @@ jobs:
       - name: Build (tauri)
         run: npm run build -- --target ${{ matrix.target }}
 
+      # macOS: the app ships an unsigned Node sidecar, which breaks the
+      # bundle's ad-hoc signature and makes Gatekeeper report "damaged".
+      # Deep ad-hoc re-sign the whole .app (sidecar included) so it opens
+      # (right-click Open, no "damaged" error). Full notarization needs a
+      # paid Apple Developer cert — tracked separately.
+      - name: Ad-hoc re-sign (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          if [ -n "$APP" ]; then
+            echo "re-signing $APP"
+            codesign --force --deep --sign - "$APP"
+            codesign -dv "$APP" 2>&1 | head -4 || true
+          fi
+
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p out
-          # Copy whatever installers this platform produced.
-          find src-tauri/target/${{ matrix.target }}/release/bundle -type f \
-            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
-            -exec cp {} out/ \; || true
+          BUNDLE=src-tauri/target/${{ matrix.target }}/release/bundle
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # Ship the re-signed .app as a zip (ditto preserves the
+            # signature + symlinks). Skip the dmg — it embeds a copy of
+            # the .app made before re-signing.
+            APP=$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' | head -1)
+            if [ -n "$APP" ]; then
+              ditto -c -k --keepParent "$APP" "out/TianshuBridge-${{ matrix.target }}.app.zip"
+            fi
+          else
+            find "$BUNDLE" -type f \
+              \( -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+              -exec cp {} out/ \; || true
+          fi
           ls -la out || true
 
       - name: Upload to Release

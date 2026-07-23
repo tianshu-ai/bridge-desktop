@@ -1,10 +1,22 @@
 // Frontend for the Tauri settings window. Talks to the Rust backend via
 // Tauri's invoke() commands: load_config / save_config / start_bridge /
 // stop_bridge / bridge_status.
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const tauri = window.__TAURI__;
+const invoke = tauri?.core?.invoke;
+const listen = tauri?.event?.listen;
 
 const $ = (id) => document.getElementById(id);
+
+if (!invoke) {
+  // Should not happen once withGlobalTauri is on, but fail loud instead
+  // of every button silently doing nothing.
+  document.addEventListener("DOMContentLoaded", () => {
+    const b = document.createElement("div");
+    b.style.cssText = "padding:10px;color:#b91c1c;font-size:12px";
+    b.textContent = "Tauri API unavailable (window.__TAURI__ missing).";
+    document.body.prepend(b);
+  });
+}
 
 function readForm() {
   return {
@@ -44,7 +56,53 @@ async function refreshStatus() {
   }
 }
 
+// Tauri's WebView doesn't wire up the standard edit shortcuts by default
+// (notably Ctrl/Cmd+V paste on Windows), so implement them for text
+// inputs manually. Covers cut / copy / paste / select-all.
+function installEditingShortcuts() {
+  document.addEventListener("keydown", async (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    const el = document.activeElement;
+    const isInput =
+      el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    if (!isInput) return;
+    const key = e.key.toLowerCase();
+    try {
+      if (key === "v") {
+        e.preventDefault();
+        const text = await navigator.clipboard.readText();
+        const s = el.selectionStart ?? el.value.length;
+        const en = el.selectionEnd ?? el.value.length;
+        el.value = el.value.slice(0, s) + text + el.value.slice(en);
+        const pos = s + text.length;
+        el.setSelectionRange(pos, pos);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (key === "c" || key === "x") {
+        const s = el.selectionStart ?? 0;
+        const en = el.selectionEnd ?? 0;
+        const sel = el.value.slice(s, en);
+        if (sel) {
+          e.preventDefault();
+          await navigator.clipboard.writeText(sel);
+          if (key === "x") {
+            el.value = el.value.slice(0, s) + el.value.slice(en);
+            el.setSelectionRange(s, s);
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+        }
+      } else if (key === "a") {
+        e.preventDefault();
+        el.select();
+      }
+    } catch (err) {
+      /* clipboard perms / no selection — ignore */
+    }
+  });
+}
+
 async function init() {
+  installEditingShortcuts();
   try {
     const cfg = await invoke("load_config");
     writeForm(cfg);
