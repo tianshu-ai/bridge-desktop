@@ -76,12 +76,13 @@
   <body>
     <div class="wrap">
       <h1>⚡ Tianshu Bridge</h1>
-      <div class="status"><span id="dot" class="dot"></span> <span id="statusText">Stopped</span></div>
+      <div class="status">Settings — start/stop the bridge from the tray icon.</div>
 
-      <div class="startstop actions">
-        <button id="startBtn" class="primary">Start</button>
-        <button id="stopBtn">Stop</button>
+      <div class="actions">
+        <button id="pasteBtn">Paste config from clipboard</button>
       </div>
+      <div class="hint">Paste the <code>tsbridge --server … --token …</code> line (or a
+        JSON snippet) copied from the Local Bridge panel to fill the form.</div>
 
       <label for="server">Server URL</label>
       <input id="server" type="text" placeholder="wss://tianshu.example.com/ws" />
@@ -104,6 +105,8 @@
 
       <div class="row"><input id="shell" type="checkbox" /><label for="shell" style="margin:0">Expose shell (exec + file sync)</label></div>
       <div class="hint">Runs commands on this machine, jailed to a fixed root.</div>
+
+      <div id="msg" class="hint"></div>
 
       <div class="actions">
         <button id="saveBtn" class="primary">Save</button>

@@ -1,10 +1,12 @@
 // Tauri desktop app for Tianshu Bridge.
 //
-// A native tray app (Windows / macOS / Linux) wrapping the `tsbridge`
-// CLI: a tray icon with Start/Stop/Settings/Quit, and a settings window
-// (the WebView UI in ../ui). It reads/writes the SAME config.json the CLI
-// tray + Swift app use (~/.tianshu-bridge/config.json), spawns `tsbridge
-// --server …` as a child, and reflects run state in the tray + UI.
+// A native tray app (Windows / macOS / Linux): a tray icon with
+// Start/Stop/Settings/Quit, and a config-only settings window (the
+// WebView UI in ../ui). It reads/writes ~/.tianshu-bridge/config.json
+// (same file as the legacy CLI tray + Swift app). Start/Stop spawn the
+// bundled bridge via a Node sidecar: <sidecar node> <resources>/bridge/
+// index.js --server … (see bridge_command). The settings window only
+// edits config; the tray drives start/stop.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::process::{Child, Command};

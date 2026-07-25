@@ -1,9 +1,8 @@
-// Frontend for the Tauri settings window. Talks to the Rust backend via
-// Tauri's invoke() commands: load_config / save_config / start_bridge /
-// stop_bridge / bridge_status.
+// Frontend for the Tauri settings window. This window is config-only:
+// start/stop happen from the tray menu. Talks to the Rust backend via
+// Tauri's invoke() commands: load_config / save_config.
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
-const listen = tauri?.event?.listen;
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,20 +39,75 @@ function writeForm(cfg) {
   $("shell").checked = !!cfg.shell;
 }
 
-function renderStatus(running) {
-  $("dot").className = "dot" + (running ? " on" : "");
-  $("statusText").textContent = running ? "Connected" : "Stopped";
-  $("startBtn").disabled = running;
-  $("stopBtn").disabled = !running;
+function flash(text) {
+  const m = $("msg");
+  if (!m) return;
+  m.textContent = text;
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => (m.textContent = ""), 2500);
 }
 
-async function refreshStatus() {
-  try {
-    const running = await invoke("bridge_status");
-    renderStatus(running);
-  } catch (e) {
-    /* ignore */
+// Parse a pasted config into a partial form object. Accepts:
+//   - a `tsbridge --server X --token Y --shell --browser-engine stealth` line
+//   - a JSON object { server, token, ... }
+//   - a bare "wss://host/ws <token>" pair
+function parseConfig(raw) {
+  const text = (raw || "").trim();
+  if (!text) return null;
+
+  // JSON?
+  if (text.startsWith("{")) {
+    try {
+      const o = JSON.parse(text);
+      return o && typeof o === "object" ? o : null;
+    } catch {
+      /* fall through */
+    }
   }
+
+  // Command-line flags?
+  if (text.includes("--server") || text.includes("--token")) {
+    const toks = text.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    const strip = (s) => s.replace(/^['"]|['"]$/g, "");
+    const out = {};
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      const next = () => strip(toks[++i] ?? "");
+      if (t === "--server") out.server = next();
+      else if (t === "--token") out.token = next();
+      else if (t === "--device") out.device = next();
+      else if (t === "--browser-engine") out.engine = next();
+      else if (t === "--headless") out.headless = true;
+      else if (t === "--shell") out.shell = true;
+      else if (t === "--no-browser") out.browser = false;
+    }
+    // Presence of --server without --no-browser implies browser on.
+    if (out.browser === undefined) out.browser = true;
+    return out;
+  }
+
+  // Bare "server [token]".
+  const parts = text.split(/\s+/);
+  if (/^wss?:\/\//i.test(parts[0])) {
+    return { server: parts[0], token: parts[1] || "" };
+  }
+  return null;
+}
+
+// Merge a parsed partial onto the current form (only overwrite provided
+// fields).
+function applyParsed(p) {
+  const cur = readForm();
+  const merged = {
+    server: p.server ?? cur.server,
+    token: p.token ?? cur.token,
+    device: p.device ?? cur.device,
+    browser: p.browser ?? cur.browser,
+    engine: p.engine ?? cur.engine,
+    headless: p.headless ?? cur.headless,
+    shell: p.shell ?? cur.shell,
+  };
+  writeForm(merged);
 }
 
 // Tauri's WebView doesn't wire up the standard edit shortcuts by default
@@ -109,33 +163,32 @@ async function init() {
   } catch (e) {
     console.error("load_config failed", e);
   }
-  await refreshStatus();
+
+  $("pasteBtn").addEventListener("click", async () => {
+    let raw = "";
+    try {
+      raw = await navigator.clipboard.readText();
+    } catch {
+      flash("Clipboard unavailable");
+      return;
+    }
+    const parsed = parseConfig(raw);
+    if (!parsed || (!parsed.server && !parsed.token)) {
+      flash("Couldn't parse clipboard — expected a tsbridge command, JSON, or wss:// URL");
+      return;
+    }
+    applyParsed(parsed);
+    flash("Filled from clipboard — review, then Save");
+  });
 
   $("saveBtn").addEventListener("click", async () => {
     await invoke("save_config", { cfg: readForm() });
     $("saveBtn").textContent = "Saved ✓";
     setTimeout(() => ($("saveBtn").textContent = "Save"), 1200);
   });
-  $("startBtn").addEventListener("click", async () => {
-    // Save first so Start uses the latest values.
-    await invoke("save_config", { cfg: readForm() });
-    await invoke("start_bridge");
-    await refreshStatus();
-  });
-  $("stopBtn").addEventListener("click", async () => {
-    await invoke("stop_bridge");
-    await refreshStatus();
-  });
   $("hideBtn").addEventListener("click", async () => {
     await invoke("hide_window");
   });
-
-  // Backend pushes status changes (e.g. bridge child exited).
-  try {
-    await listen("bridge-status", (ev) => renderStatus(!!ev.payload));
-  } catch (e) {
-    /* ignore */
-  }
 }
 
 init();
