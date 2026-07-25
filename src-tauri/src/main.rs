@@ -74,6 +74,30 @@ fn log_path() -> std::path::PathBuf {
     config_dir().join("bridge.log")
 }
 
+/// Always-on diagnostic log for the app itself (tray clicks, spawn
+/// attempts, resolved paths, errors) — written even when the bridge
+/// child never starts, unlike bridge.log.
+fn trace_log(msg: &str) {
+    use std::io::Write;
+    let dir = config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("tray.log"))
+    {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            msg
+        );
+    }
+}
+
 /// Cross-platform home dir without pulling the `dirs` crate.
 fn dirs_home() -> std::path::PathBuf {
     #[cfg(windows)]
@@ -127,6 +151,7 @@ impl BridgeState {
     }
 
     fn start(&self, cfg: &BridgeConfig, app: &tauri::AppHandle) -> Result<(), String> {
+        trace_log(&format!("start() called; server={}", cfg.server));
         self.stop();
         let mut args: Vec<String> = vec!["--server".into(), cfg.server.clone()];
         if !cfg.token.is_empty() {
@@ -158,11 +183,18 @@ impl BridgeState {
             .append(true)
             .open(log_path());
 
-        let (cmd, mut pre_args) = bridge_command(app)?;
+        let (cmd, mut pre_args) = match bridge_command(app) {
+            Ok(v) => v,
+            Err(e) => {
+                trace_log(&format!("bridge_command failed: {e}"));
+                return Err(e);
+            }
+        };
         // pre_args already contains the bridge entry .js when using the
         // Node sidecar; append the bridge CLI flags after it.
         pre_args.extend(args);
-        let mut command = Command::new(cmd);
+        trace_log(&format!("spawning: {} {:?}", cmd, pre_args));
+        let mut command = Command::new(&cmd);
         command.args(&pre_args);
         if let Ok(f) = log {
             let f2 = f.try_clone().ok();
@@ -177,7 +209,15 @@ impl BridgeState {
             // CREATE_NO_WINDOW: don't pop a console for the bridge child.
             command.creation_flags(0x0800_0000);
         }
-        let child = command.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+        let child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("spawn failed: {e} (cmd={cmd})");
+                trace_log(&msg);
+                return Err(msg);
+            }
+        };
+        trace_log(&format!("spawned pid={:?}", child.id()));
         *self.child.lock().unwrap() = Some(child);
         Ok(())
     }
@@ -221,6 +261,13 @@ fn bridge_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>), Strin
 
     let node_str = node.to_string_lossy().to_string();
     let entry_str = entry.to_string_lossy().to_string();
+    trace_log(&format!(
+        "bridge_command: node={} (exists={}) entry={} (exists={})",
+        node_str,
+        node.exists(),
+        entry_str,
+        entry.exists()
+    ));
     Ok((node_str, vec![entry_str]))
 }
 
@@ -306,10 +353,15 @@ fn main() {
                         }
                     }
                     "start" => {
+                        trace_log("tray: Start clicked");
                         let state = app.state::<BridgeState>();
                         let cfg = load_config_file();
-                        let _ = state.start(&cfg, app);
-                        let _ = app.emit("bridge-status", true);
+                        match state.start(&cfg, app) {
+                            Ok(()) => {
+                                let _ = app.emit("bridge-status", true);
+                            }
+                            Err(e) => trace_log(&format!("tray Start error: {e}")),
+                        }
                     }
                     "stop" => {
                         let state = app.state::<BridgeState>();
