@@ -1,11 +1,14 @@
 name: Release
 
-# Build native installers for all platforms and attach them to a GitHub
-# Release. Triggered by pushing a tag like v0.1.0, or manually.
+# Build native installers for all platforms and publish them to a GitHub
+# Release. Two tracks (à la Deskflow):
+#   - push to main        → "continuous" prerelease (always latest build)
+#   - push a tag  v*      → a versioned, stable release
+#   - workflow_dispatch   → build + upload artifacts only (no release)
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -96,16 +99,54 @@ jobs:
           fi
           ls -la out || true
 
-      - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: out/*
-          fail_on_unmatched_files: false
-
-      - name: Upload artifacts (manual runs)
-        if: "!startsWith(github.ref, 'refs/tags/')"
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bridge-desktop-${{ matrix.target }}
           path: out/*
+          if-no-files-found: warn
+
+  # Publish a GitHub Release from the collected artifacts. Runs only for
+  # main pushes (→ continuous prerelease) and tags (→ stable release).
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten + checksums
+        run: |
+          mkdir -p out
+          find dist -type f -exec cp {} out/ \;
+          cd out
+          ls -la
+          sha256sum * > SHA256SUMS.txt || true
+          cat SHA256SUMS.txt || true
+
+      # main push → refresh the rolling "continuous" prerelease.
+      - name: Publish continuous prerelease
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous (latest main)
+          prerelease: true
+          # Replace the rolling release's assets on every build.
+          files: out/*
+          body: |
+            Rolling build from the latest `main`. Unsigned / ad-hoc signed —
+            see README for how to open on macOS (right-click → Open) and
+            Windows (SmartScreen → Run anyway).
+
+      # tag push → versioned stable release.
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: false
+          files: out/*
