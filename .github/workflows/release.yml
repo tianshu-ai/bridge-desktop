@@ -60,7 +60,16 @@ jobs:
           TARGET_TRIPLE: ${{ matrix.target }}
         run: node scripts/prepare-payload.mjs --node-version v22.14.0
 
-      - name: Build (tauri)
+      # Per-platform bundle targets. On macOS we build ONLY the .app
+      # (no dmg): tauri deletes bundle/macos/*.app right after making the
+      # dmg, which would wipe the app we need to re-sign + zip. We ship
+      # the re-signed .app as a zip instead.
+      - name: Build (tauri, macOS → app only)
+        if: runner.os == 'macOS'
+        run: npm run build -- --target ${{ matrix.target }} --bundles app
+
+      - name: Build (tauri, Windows/Linux)
+        if: runner.os != 'macOS'
         run: npm run build -- --target ${{ matrix.target }}
 
       # macOS: the app ships an unsigned Node sidecar, which breaks the
@@ -93,8 +102,11 @@ jobs:
               ditto -c -k --keepParent "$APP" "out/TianshuBridge-${{ matrix.target }}.app.zip"
             fi
           else
+            # Only real installers. Restrict .exe to NSIS setup files
+            # (…-setup.exe) so stray bundled exes (e.g. systray2's
+            # tray_windows_release.exe under node_modules) don't leak in.
             find "$BUNDLE" -type f \
-              \( -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+              \( -name '*.msi' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
               -exec cp {} out/ \; || true
           fi
           ls -la out || true
