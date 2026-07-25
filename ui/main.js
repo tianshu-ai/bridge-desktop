@@ -48,12 +48,38 @@ function flash(text) {
 }
 
 // Parse a pasted config into a partial form object. Accepts:
+//   - a `tsbridge://configure?server=…&token=…&…` deep link
+//     (the format the Tianshu panel copies)
 //   - a `tsbridge --server X --token Y --shell --browser-engine stealth` line
 //   - a JSON object { server, token, ... }
 //   - a bare "wss://host/ws <token>" pair
 function parseConfig(raw) {
   const text = (raw || "").trim();
   if (!text) return null;
+
+  // tsbridge://configure?… deep link (Tianshu panel format).
+  if (/^tsbridge:\/\//i.test(text)) {
+    let q;
+    try {
+      // Normalise to a parseable URL; the query is what matters.
+      const u = new URL(text);
+      q = u.searchParams;
+    } catch {
+      // Fallback: grab the query string manually.
+      const qs = text.split("?")[1] || "";
+      q = new URLSearchParams(qs);
+    }
+    const out = {};
+    const bool = (v) => v === "1" || v === "true" || v === "yes";
+    if (q.has("server")) out.server = q.get("server");
+    if (q.has("token")) out.token = q.get("token");
+    if (q.has("device")) out.device = q.get("device");
+    if (q.has("engine")) out.engine = q.get("engine");
+    if (q.has("browser")) out.browser = bool(q.get("browser"));
+    if (q.has("headless")) out.headless = bool(q.get("headless"));
+    if (q.has("shell")) out.shell = bool(q.get("shell"));
+    return out;
+  }
 
   // JSON?
   if (text.startsWith("{")) {
