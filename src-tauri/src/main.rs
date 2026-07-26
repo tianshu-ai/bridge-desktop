@@ -228,7 +228,7 @@ impl BridgeState {
             // CREATE_NO_WINDOW: don't pop a console for the bridge child.
             command.creation_flags(0x0800_0000);
         }
-        let child = match command.spawn() {
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
                 let msg = format!("spawn failed: {e} (cmd={cmd})");
