@@ -9,6 +9,9 @@
 // edits config; the tray drives start/stop.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(unix)]
+extern crate libc;
+
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
@@ -226,8 +229,33 @@ impl BridgeState {
     fn stop(&self) {
         let mut guard = self.child.lock().unwrap();
         if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            // Send SIGTERM first so the bridge can close the WS
+            // connection gracefully (server detects disconnect immediately).
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGTERM);
+                }
+            }
+            #[cfg(windows)]
+            {
+                // Windows: no SIGTERM; kill() sends TerminateProcess.
+                let _ = child.kill();
+            }
+            // Give it a moment to shut down gracefully, then force-kill.
+            match child.try_wait() {
+                Ok(Some(_)) => {} // already exited
+                _ => {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    match child.try_wait() {
+                        Ok(Some(_)) => {}
+                        _ => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+            }
         }
     }
 }
