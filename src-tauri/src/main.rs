@@ -443,9 +443,10 @@ fn main() {
                         }
                     }
                     "logs" => {
-                        // Open the log directory in the system file manager.
-                        let dir = config_dir();
-                        let _ = open::that(&dir);
+                        if let Some(w) = app.get_webview_window("logs") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
                     }
                     "start" => {
                         trace_log("tray: Start clicked");

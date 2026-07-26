@@ -71,38 +71,12 @@
       button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
       button:disabled { opacity: 0.5; cursor: default; }
       .startstop { margin-bottom: 6px; }
-      /* Tabs */
-      .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
-      .tabs button { flex: none; background: none; border: none; border-bottom: 2px solid transparent;
-        padding: 8px 16px; font-size: 13px; color: var(--muted); cursor: pointer; }
-      .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
-      .tab-panel { display: none; }
-      .tab-panel.active { display: block; }
-      /* Logs */
-      .log-toolbar { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
-      .log-toolbar input { flex: 1; padding: 5px 8px; border: 1px solid var(--border);
-        border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 12px; }
-      .log-toolbar button { flex: none; width: auto; padding: 5px 12px; }
-      .log-list { max-height: 380px; overflow-y: auto; font-family: "SF Mono", "Fira Code", monospace;
-        font-size: 11px; line-height: 1.6; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
-      .log-entry { display: flex; gap: 8px; }
-      .log-entry .ts { color: var(--muted); white-space: nowrap; min-width: 70px; }
-      .log-entry .src { font-weight: 600; min-width: 44px; }
-      .log-entry .src.tray { color: #8b5cf6; }
-      .log-entry .src.bridge { color: var(--accent); }
-      .log-entry .msg { word-break: break-all; }
-      .log-empty { color: var(--muted); text-align: center; padding: 40px 0; }
+
     </style>
   </head>
   <body>
     <div class="wrap">
       <h1>⚡ Tianshu Bridge</h1>
-      <div class="tabs">
-        <button class="active" data-tab="settings">Settings</button>
-        <button data-tab="logs">Logs</button>
-      </div>
-
-      <div id="tab-settings" class="tab-panel active">
       <div class="status">Settings — start/stop the bridge from the tray icon.</div>
 
       <div class="actions">
@@ -139,17 +113,7 @@
         <button id="saveBtn" class="primary">Save</button>
         <button id="hideBtn">Close</button>
       </div>
-      </div><!-- /tab-settings -->
 
-      <div id="tab-logs" class="tab-panel">
-        <div class="log-toolbar">
-          <input id="logSearch" type="text" placeholder="Search logs…" />
-          <button id="logRefresh">↻ Refresh</button>
-        </div>
-        <div id="logList" class="log-list">
-          <div class="log-empty">Loading…</div>
-        </div>
-      </div><!-- /tab-logs -->
     </div>
 
     <script type="module" src="./main.js"></script>

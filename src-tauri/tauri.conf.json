@@ -17,6 +17,16 @@
         "resizable": true,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "logs",
+        "title": "Tianshu Bridge — Logs",
+        "url": "logs.html",
+        "width": 800,
+        "height": 500,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
