@@ -13,6 +13,7 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -336,10 +337,17 @@ fn main() {
         .setup(|app| {
             // Tray menu: Settings / Start / Stop / Quit.
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let status_i = MenuItem::with_id(app, "status", "\u{25cb} Stopped", false, None::<&str>)?;
             let start_i = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;
-            let stop_i = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
+            let stop_i = MenuItem::with_id(app, "stop", "Stop", false, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings_i, &start_i, &stop_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&status_i, &settings_i, &start_i, &stop_i, &quit_i])?;
+            let start_ref = Arc::new(start_i);
+            let stop_ref = Arc::new(stop_i);
+            let status_ref = Arc::new(status_i);
+            let start_c = Arc::clone(&start_ref);
+            let stop_c = Arc::clone(&stop_ref);
+            let status_c = Arc::clone(&status_ref);
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -359,14 +367,23 @@ fn main() {
                         match state.start(&cfg, app) {
                             Ok(()) => {
                                 let _ = app.emit("bridge-status", true);
+                                let _ = start_c.set_enabled(false);
+                                let _ = stop_c.set_enabled(true);
+                                let _ = status_c.set_text("\u{25cf} Running");
                             }
-                            Err(e) => trace_log(&format!("tray Start error: {e}")),
+                            Err(e) => {
+                                trace_log(&format!("tray Start error: {e}"));
+                                let _ = status_c.set_text("\u{25cb} Start failed");
+                            }
                         }
                     }
                     "stop" => {
                         let state = app.state::<BridgeState>();
                         state.stop();
                         let _ = app.emit("bridge-status", false);
+                        let _ = start_c.set_enabled(true);
+                        let _ = stop_c.set_enabled(false);
+                        let _ = status_c.set_text("\u{25cb} Stopped");
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
