@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Emitter, Manager, State,
@@ -368,8 +369,9 @@ fn main() {
             let status_i = MenuItem::with_id(app, "status", "\u{25cb} Stopped", false, None::<&str>)?;
             let start_i = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;
             let stop_i = MenuItem::with_id(app, "stop", "Stop", false, None::<&str>)?;
+            let logs_i = MenuItem::with_id(app, "logs", "View Logs…", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status_i, &settings_i, &start_i, &stop_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&status_i, &settings_i, &start_i, &stop_i, &logs_i, &quit_i])?;
             let start_ref = Arc::new(start_i);
             let stop_ref = Arc::new(stop_i);
             let status_ref = Arc::new(status_i);
@@ -377,8 +379,14 @@ fn main() {
             let stop_c = Arc::clone(&stop_ref);
             let status_c = Arc::clone(&status_ref);
 
+            // Tray icons: green circle = running, gray circle = stopped.
+            let icon_stopped = Image::from_bytes(include_bytes!("../icons/tray/stopped.png"))?;
+            let icon_running = Image::from_bytes(include_bytes!("../icons/tray/running.png"))?;
+            let icon_running_c = icon_running.clone();
+            let icon_stopped_c = icon_stopped.clone();
+
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(icon_stopped)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -387,6 +395,11 @@ fn main() {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
+                    }
+                    "logs" => {
+                        // Open the log directory in the system file manager.
+                        let dir = config_dir();
+                        let _ = open::that(&dir);
                     }
                     "start" => {
                         trace_log("tray: Start clicked");
@@ -398,6 +411,9 @@ fn main() {
                                 let _ = start_c.set_enabled(false);
                                 let _ = stop_c.set_enabled(true);
                                 let _ = status_c.set_text("\u{25cf} Running");
+                                if let Some(tray) = app.tray_by_id("main") {
+                                    let _ = tray.set_icon(Some(icon_running_c.clone()));
+                                }
                             }
                             Err(e) => {
                                 trace_log(&format!("tray Start error: {e}"));
@@ -412,6 +428,9 @@ fn main() {
                         let _ = start_c.set_enabled(true);
                         let _ = stop_c.set_enabled(false);
                         let _ = status_c.set_text("\u{25cb} Stopped");
+                        if let Some(tray) = app.tray_by_id("main") {
+                            let _ = tray.set_icon(Some(icon_stopped_c.clone()));
+                        }
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
@@ -420,6 +439,7 @@ fn main() {
                     }
                     _ => {}
                 })
+                .id("main")
                 .build(app)?;
 
             // Start hidden: the app lives in the tray. The window shows
