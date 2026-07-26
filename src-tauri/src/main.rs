@@ -81,6 +81,27 @@ fn log_path() -> std::path::PathBuf {
     config_dir().join("bridge.log")
 }
 
+/// Read lines from a pipe, prepend [epoch] timestamp, append to log file.
+fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path) {
+    use std::io::{BufRead, BufReader, Write};
+    let reader = BufReader::new(pipe);
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.is_empty() { continue; }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "[{}] {}", ts, line);
+        }
+    }
+}
+
 /// Always-on diagnostic log for the app itself (tray clicks, spawn
 /// attempts, resolved paths, errors) — written even when the bridge
 /// child never starts, unlike bridge.log.
@@ -184,11 +205,7 @@ impl BridgeState {
             args.push(cfg.device.clone());
         }
 
-        // Log bridge stdout/stderr to ~/.tianshu-bridge/bridge.log.
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path());
+        // We'll pipe stdout/stderr and prepend timestamps in a bg thread.
 
         let (cmd, mut pre_args) = match bridge_command(app) {
             Ok(v) => v,
@@ -203,13 +220,8 @@ impl BridgeState {
         trace_log(&format!("spawning: {} {:?}", cmd, pre_args));
         let mut command = Command::new(&cmd);
         command.args(&pre_args);
-        if let Ok(f) = log {
-            let f2 = f.try_clone().ok();
-            command.stdout(std::process::Stdio::from(f));
-            if let Some(f2) = f2 {
-                command.stderr(std::process::Stdio::from(f2));
-            }
-        }
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -225,6 +237,19 @@ impl BridgeState {
             }
         };
         trace_log(&format!("spawned pid={:?}", child.id()));
+
+        // Spawn background threads to read stdout/stderr, prepend [epoch]
+        // timestamps, and append to bridge.log.
+        let log_path = log_path();
+        if let Some(stdout) = child.stdout.take() {
+            let p = log_path.clone();
+            std::thread::spawn(move || timestamped_pipe(stdout, &p));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let p = log_path.clone();
+            std::thread::spawn(move || timestamped_pipe(stderr, &p));
+        }
+
         *self.child.lock().unwrap() = Some(child);
         Ok(())
     }
