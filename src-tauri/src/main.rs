@@ -404,7 +404,11 @@ fn main() {
                                 let _ = start_c.set_enabled(false);
                                 let _ = stop_c.set_enabled(true);
                                 let _ = status_c.set_text("\u{25cf} Running");
-
+                                if let Some(tray) = app.tray_by_id("main") {
+                                    if let Ok(img) = Image::from_bytes(ICON_RUNNING_PNG) {
+                                        let _ = tray.set_icon(Some(img));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 trace_log(&format!("tray Start error: {e}"));
@@ -419,7 +423,11 @@ fn main() {
                         let _ = start_c.set_enabled(true);
                         let _ = stop_c.set_enabled(false);
                         let _ = status_c.set_text("\u{25cb} Stopped");
-
+                        if let Some(tray) = app.tray_by_id("main") {
+                            if let Ok(img) = Image::from_bytes(ICON_STOPPED_PNG) {
+                                let _ = tray.set_icon(Some(img));
+                            }
+                        }
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
