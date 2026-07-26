@@ -351,6 +351,53 @@ fn hide_window(window: tauri::WebviewWindow) {
     let _ = window.hide();
 }
 
+/// Read the last N lines from tray.log + bridge.log, returning them
+/// as a combined vec sorted by timestamp. Each entry has {ts, source, line}.
+#[tauri::command]
+fn read_logs(max_lines: Option<usize>) -> Vec<LogEntry> {
+    let limit = max_lines.unwrap_or(500);
+    let dir = config_dir();
+    let mut entries = Vec::new();
+    for (file, source) in [("tray.log", "tray"), ("bridge.log", "bridge")] {
+        let path = dir.join(file);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let (ts, text) = parse_log_line(line);
+                entries.push(LogEntry {
+                    ts,
+                    source: source.to_string(),
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+    // Sort by timestamp descending (newest first), take limit.
+    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+    entries.truncate(limit);
+    entries
+}
+
+#[derive(Clone, Serialize)]
+struct LogEntry {
+    ts: u64,
+    source: String,
+    text: String,
+}
+
+/// Parse a log line like "[1784996365] some text" → (timestamp, text).
+/// bridge.log lines have no timestamp wrapper, so ts=0 for those.
+fn parse_log_line(line: &str) -> (u64, &str) {
+    if line.starts_with('[') {
+        if let Some(end) = line.find(']') {
+            if let Ok(ts) = line[1..end].parse::<u64>() {
+                let text = line[end + 1..].trim_start();
+                return (ts, text);
+            }
+        }
+    }
+    (0, line)
+}
+
 // ─── app setup: tray + window ───────────────────────────────────────
 
 fn main() {
@@ -364,6 +411,7 @@ fn main() {
             stop_bridge,
             bridge_status,
             hide_window,
+            read_logs,
         ])
         .setup(|app| {
             // Tray menu: Settings / Start / Stop / Quit.

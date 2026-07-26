@@ -215,6 +215,71 @@ async function init() {
   $("hideBtn").addEventListener("click", async () => {
     await invoke("hide_window");
   });
+
+  // ─── Tabs ───
+  document.querySelectorAll(".tabs button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      const panel = $("tab-" + btn.dataset.tab);
+      if (panel) panel.classList.add("active");
+      if (btn.dataset.tab === "logs") loadLogs();
+    });
+  });
+
+  // ─── Logs ───
+  $("logRefresh").addEventListener("click", loadLogs);
+  $("logSearch").addEventListener("input", renderLogs);
+}
+
+let _logEntries = [];
+
+async function loadLogs() {
+  try {
+    _logEntries = await invoke("read_logs", { maxLines: 500 });
+  } catch (e) {
+    _logEntries = [];
+  }
+  renderLogs();
+}
+
+function renderLogs() {
+  const container = $("logList");
+  const query = ($("logSearch").value || "").toLowerCase();
+  const filtered = query
+    ? _logEntries.filter((e) => e.text.toLowerCase().includes(query) || e.source.includes(query))
+    : _logEntries;
+
+  if (!filtered.length) {
+    container.innerHTML = '<div class="log-empty">No logs found</div>';
+    return;
+  }
+
+  container.innerHTML = filtered
+    .map((e) => {
+      const time = e.ts ? formatTs(e.ts) : "—";
+      return `<div class="log-entry">
+        <span class="ts">${time}</span>
+        <span class="src ${e.source}">${e.source}</span>
+        <span class="msg">${esc(e.text)}</span>
+      </div>`;
+    })
+    .join("");
+}
+
+function formatTs(epoch) {
+  const d = new Date(epoch * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mo}-${dd} ${hh}:${mm}:${ss}`;
+}
+
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 init();
