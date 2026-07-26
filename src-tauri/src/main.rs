@@ -181,6 +181,8 @@ impl BridgeState {
     fn start(&self, cfg: &BridgeConfig, app: &tauri::AppHandle) -> Result<(), String> {
         trace_log(&format!("start() called; server={}", cfg.server));
         self.stop();
+        // Archive previous logs before starting fresh.
+        archive_logs();
         let mut args: Vec<String> = vec!["--server".into(), cfg.server.clone()];
         if !cfg.token.is_empty() {
             args.push("--token".into());
@@ -376,6 +378,64 @@ fn hide_window(window: tauri::WebviewWindow) {
     let _ = window.hide();
 }
 
+/// Archive current logs to a dated file and start fresh.
+fn archive_logs() {
+    let dir = config_dir();
+    let now = chrono_now();
+    let archive_dir = dir.join("archives");
+    let _ = std::fs::create_dir_all(&archive_dir);
+    for file in ["tray.log", "bridge.log"] {
+        let src = dir.join(file);
+        if src.exists() {
+            let stem = file.trim_end_matches(".log");
+            let dest = archive_dir.join(format!("{}-{}.log", stem, now));
+            let _ = std::fs::rename(&src, &dest);
+        }
+    }
+}
+
+/// Returns YYYY-MM-DD_HH-MM-SS in local time.
+fn chrono_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    // Simple UTC+8 offset (good enough for local archiving).
+    let local = secs + 8 * 3600;
+    let days = local / 86400;
+    let time_of_day = local % 86400;
+    // Days since 1970-01-01 → date.
+    let (y, m, d) = days_to_ymd(days);
+    let hh = time_of_day / 3600;
+    let mm = (time_of_day % 3600) / 60;
+    let ss = time_of_day % 60;
+    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", y, m, d, hh, mm, ss)
+}
+
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    // Civil days from epoch algorithm (Howard Hinnant).
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// Clear all current logs (called from UI).
+#[tauri::command]
+fn clear_logs() {
+    let dir = config_dir();
+    for file in ["tray.log", "bridge.log"] {
+        let _ = std::fs::remove_file(dir.join(file));
+    }
+}
+
 /// Read the last N lines from tray.log + bridge.log, returning them
 /// as a combined vec sorted by timestamp. Each entry has {ts, source, line}.
 #[tauri::command]
@@ -437,6 +497,7 @@ fn main() {
             bridge_status,
             hide_window,
             read_logs,
+            clear_logs,
         ])
         .setup(|app| {
             // Tray menu: Settings / Start / Stop / Quit.

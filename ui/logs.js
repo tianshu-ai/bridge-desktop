@@ -67,6 +67,11 @@ function highlight(html, q) {
 
 $("search").addEventListener("input", render);
 $("refresh").addEventListener("click", loadLogs);
+$("clear").addEventListener("click", async () => {
+  await invoke("clear_logs");
+  entries = [];
+  render();
+});
 
 // Auto-refresh every 3 seconds while window is visible.
 setInterval(() => {
