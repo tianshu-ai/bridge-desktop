@@ -23,6 +23,9 @@ use tauri::{
     Emitter, Manager, State,
 };
 
+static ICON_STOPPED_PNG: &[u8] = include_bytes!("../icons/tray/stopped.png");
+static ICON_RUNNING_PNG: &[u8] = include_bytes!("../icons/tray/running.png");
+
 // ─── config (mirrors app/TianshuBridge.swift + tray.ts) ─────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -378,8 +381,10 @@ fn main() {
             let stop_c = Arc::clone(&stop_ref);
             let status_c = Arc::clone(&status_ref);
 
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+            let icon_stopped = tauri::image::Image::from_bytes(ICON_STOPPED_PNG)
+                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
+            let _tray = TrayIconBuilder::with_id("main")
+                .icon(icon_stopped)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -405,7 +410,7 @@ fn main() {
                                 let _ = stop_c.set_enabled(true);
                                 let _ = status_c.set_text("\u{25cf} Running");
                                 if let Some(tray) = app.tray_by_id("main") {
-                                    if let Ok(img) = Image::from_bytes(ICON_RUNNING_PNG) {
+                                    if let Ok(img) = tauri::image::Image::from_bytes(ICON_RUNNING_PNG) {
                                         let _ = tray.set_icon(Some(img));
                                     }
                                 }
@@ -424,7 +429,7 @@ fn main() {
                         let _ = stop_c.set_enabled(false);
                         let _ = status_c.set_text("\u{25cb} Stopped");
                         if let Some(tray) = app.tray_by_id("main") {
-                            if let Ok(img) = Image::from_bytes(ICON_STOPPED_PNG) {
+                            if let Ok(img) = tauri::image::Image::from_bytes(ICON_STOPPED_PNG) {
                                 let _ = tray.set_icon(Some(img));
                             }
                         }
