@@ -69,7 +69,10 @@ function prepareBridge() {
   const spec = `@tianshu-ai/local-bridge@${BRIDGE_VERSION}`;
   console.log(`[payload] installing ${spec} …`);
   fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "x", private: true }));
-  execSync(`npm install --omit=dev --no-audit --no-fund ${spec}`, {
+  // Install bridge + the MCP packages it spawns at runtime (so they're
+  // available in embedded/packaged mode without npx).
+  const mcpDeps = "cloakbrowser-mcp@latest @playwright/mcp@latest";
+  execSync(`npm install --omit=dev --no-audit --no-fund ${spec} ${mcpDeps}`, {
     cwd: tmp,
     stdio: "inherit",
   });
