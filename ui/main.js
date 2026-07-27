@@ -40,12 +40,15 @@ function writeForm(cfg) {
   $("shell").checked = !!cfg.shell;
 }
 
-function flash(text) {
-  const m = $("msg");
-  if (!m) return;
-  m.textContent = text;
+function flash(text, level = "info") {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = text;
+  t.className = `toast ${level} visible`;
   clearTimeout(flash._t);
-  flash._t = setTimeout(() => (m.textContent = ""), 2500);
+  flash._t = setTimeout(() => {
+    t.classList.remove("visible");
+  }, 2500);
 }
 
 // Parse a pasted config into a partial form object. Accepts:
@@ -196,12 +199,12 @@ async function init() {
     try {
       raw = readClipboard ? await readClipboard() : await navigator.clipboard.readText();
     } catch {
-      flash("Clipboard unavailable");
+      flash("Clipboard unavailable", "error");
       return;
     }
     const parsed = parseConfig(raw);
     if (!parsed || (!parsed.server && !parsed.token)) {
-      flash("Couldn't parse clipboard — expected a tsbridge command, JSON, or wss:// URL");
+      flash("Couldn't parse clipboard \u2014 expected a tsbridge command, JSON, or wss:// URL", "warn");
       return;
     }
     applyParsed(parsed);
