@@ -204,13 +204,16 @@ async function init() {
       return;
     }
     applyParsed(parsed);
-    flash("Filled from clipboard — review, then Save");
+    // Auto-save immediately after paste.
+    await invoke("save_config", { cfg: readForm() });
+    flash("Config saved \u2713");
+    setTimeout(() => invoke("hide_window"), 800);
   });
 
   $("saveBtn").addEventListener("click", async () => {
     await invoke("save_config", { cfg: readForm() });
-    $("saveBtn").textContent = "Saved ✓";
-    setTimeout(() => ($("saveBtn").textContent = "Save"), 1200);
+    $("saveBtn").textContent = "Saved \u2713";
+    setTimeout(() => invoke("hide_window"), 800);
   });
   $("hideBtn").addEventListener("click", async () => {
     await invoke("hide_window");
