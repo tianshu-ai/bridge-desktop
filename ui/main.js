@@ -204,10 +204,9 @@ async function init() {
       return;
     }
     applyParsed(parsed);
-    // Auto-save immediately after paste.
-    await invoke("save_config", { cfg: readForm() });
-    flash("Config saved \u2713");
-    setTimeout(() => invoke("hide_window"), 800);
+    // Hide the paste button after successful paste.
+    $("pasteBtn").style.display = "none";
+    flash("Config filled \u2014 review, then Save");
   });
 
   $("saveBtn").addEventListener("click", async () => {
