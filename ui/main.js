@@ -3,6 +3,7 @@
 // Tauri's invoke() commands: load_config / save_config.
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
+const readClipboard = tauri?.clipboardManager?.readText;
 
 const $ = (id) => document.getElementById(id);
 
@@ -193,7 +194,7 @@ async function init() {
   $("pasteBtn").addEventListener("click", async () => {
     let raw = "";
     try {
-      raw = await navigator.clipboard.readText();
+      raw = readClipboard ? await readClipboard() : await navigator.clipboard.readText();
     } catch {
       flash("Clipboard unavailable");
       return;
