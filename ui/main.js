@@ -205,8 +205,6 @@ async function init() {
       return;
     }
     applyParsed(parsed);
-    // Hide the paste button after successful paste.
-    $("pasteBtn").style.display = "none";
     flash("Config filled \u2014 review, then Save");
   });
 
