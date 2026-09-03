@@ -1,6 +1,6 @@
 {
   "name": "tianshu-bridge-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Tianshu Bridge — native desktop tray app (Tauri). Bundles the local-bridge as a Node sidecar.",
   "type": "module",
