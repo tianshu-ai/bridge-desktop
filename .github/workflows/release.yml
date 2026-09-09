@@ -49,6 +49,12 @@ jobs:
       - name: Linux deps
         if: matrix.os == 'ubuntu-22.04'
         run: |
+          # GitHub runners preinstall Google Chrome's apt repo; when its
+          # Packages.gz is updated mid-flight we hit "Hash Sum mismatch"
+          # and apt-get update exits non-zero. We don't need chrome for
+          # this build, so drop those source lists first.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
+                     /etc/apt/sources.list.d/google.list
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
