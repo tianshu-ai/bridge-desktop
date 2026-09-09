@@ -207,12 +207,28 @@ fn trace_log(msg: &str) {
     }
 }
 
-fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path) {
+/// Callback for tool activity events parsed from bridge stdout.
+type ActivityCallback = Arc<dyn Fn(i32) + Send + Sync>;
+
+fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path, on_activity: Option<ActivityCallback>) {
     use std::io::{BufRead, BufReader, Write};
     let reader = BufReader::new(pipe);
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.is_empty() { continue; }
+
+        // Detect tool_activity JSON lines from the bridge child
+        if line.starts_with(r#"{"type":"tool_activity"#) {
+            if let Some(ref cb) = on_activity {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(active) = v.get("active").and_then(|a| a.as_i64()) {
+                        cb(active as i32);
+                    }
+                }
+            }
+            continue; // Don't log activity lines
+        }
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0);
@@ -295,13 +311,30 @@ impl BridgeState {
         trace_log(&format!("spawned pid={:?} for {}", child.id(), profile.name));
 
         let log = log_path_for(&profile.id);
+        // Activity callback: update tray icon when tools start/finish.
+        // Clone the app handle so the bg thread can update the tray.
+        let app_clone = app.clone();
+        let activity_cb: ActivityCallback = Arc::new(move |active: i32| {
+            if let Some(tray) = app_clone.tray_by_id("main") {
+                let icon_data = if active > 0 { ICON_ACTIVE_1 } else {
+                    // Count running profiles to pick the right numbered icon
+                    let state = app_clone.state::<BridgeState>();
+                    let count = state.running_ids().len();
+                    icon_for_count(count)
+                };
+                if let Ok(img) = tauri::image::Image::from_bytes(icon_data) {
+                    let _ = tray.set_icon(Some(img));
+                }
+            }
+        });
         if let Some(stdout) = child.stdout.take() {
             let p = log.clone();
-            std::thread::spawn(move || timestamped_pipe(stdout, &p));
+            let cb = Some(Arc::clone(&activity_cb));
+            std::thread::spawn(move || timestamped_pipe(stdout, &p, cb));
         }
         if let Some(stderr) = child.stderr.take() {
             let p = log.clone();
-            std::thread::spawn(move || timestamped_pipe(stderr, &p));
+            std::thread::spawn(move || timestamped_pipe(stderr, &p, None));
         }
 
         self.children.lock().unwrap().insert(profile.id.clone(), child);
