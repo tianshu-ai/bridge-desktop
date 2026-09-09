@@ -1,24 +1,21 @@
-// Tauri desktop app for Tianshu Bridge.
+// Tauri desktop app for Tianshu Bridge — multi-profile.
 //
-// A native tray app (Windows / macOS / Linux): a tray icon with
-// Start/Stop/Settings/Quit, and a config-only settings window (the
-// WebView UI in ../ui). It reads/writes ~/.tianshu-bridge/config.json
-// (same file as the legacy CLI tray + Swift app). Start/Stop spawn the
-// bundled bridge via a Node sidecar: <sidecar node> <resources>/bridge/
-// index.js --server … (see bridge_command). The settings window only
-// edits config; the tray drives start/stop.
+// A native tray app (Windows / macOS / Linux): each profile gets its own
+// status line in the tray menu + start/stop. Config lives at
+// ~/.tianshu-bridge/config.json (same as CLI local-bridge v0.12+).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(unix)]
 extern crate libc;
 
+use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     Emitter, Manager, State,
 };
@@ -26,14 +23,22 @@ use tauri::{
 static ICON_STOPPED_PNG: &[u8] = include_bytes!("../icons/tray/stopped.png");
 static ICON_RUNNING_PNG: &[u8] = include_bytes!("../icons/tray/running.png");
 
-// ─── config (mirrors app/TianshuBridge.swift + tray.ts) ─────────────
+// ─── config ─────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct BridgeConfig {
+struct BridgeProfile {
+    #[serde(default = "gen_id")]
+    id: String,
+    #[serde(default = "default_name")]
+    name: String,
     #[serde(default = "default_server")]
     server: String,
     #[serde(default)]
     token: String,
+    #[serde(default)]
+    device: String,
+    #[serde(default = "default_true")]
+    auto_start: bool,
     #[serde(default = "default_true")]
     browser: bool,
     #[serde(default = "default_engine")]
@@ -42,46 +47,147 @@ struct BridgeConfig {
     headless: bool,
     #[serde(default)]
     shell: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MultiConfig {
     #[serde(default)]
-    device: String,
+    profiles: Vec<BridgeProfile>,
 }
 
-fn default_server() -> String {
-    "ws://localhost:3110/ws".into()
-}
-fn default_true() -> bool {
-    true
-}
-fn default_engine() -> String {
-    "own".into()
+// Legacy single-profile format (for migration)
+#[derive(Deserialize)]
+struct LegacyConfig {
+    server: Option<String>,
+    token: Option<String>,
+    browser: Option<bool>,
+    engine: Option<String>,
+    headless: Option<bool>,
+    shell: Option<bool>,
+    device: Option<String>,
 }
 
-impl Default for BridgeConfig {
+fn gen_id() -> String {
+    format!(
+        "p_{:x}_{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        rand_u32()
+    )
+}
+fn rand_u32() -> u32 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut h);
+    std::thread::current().id().hash(&mut h);
+    h.finish() as u32
+}
+fn default_name() -> String { "Default".into() }
+fn default_server() -> String { "ws://localhost:3110/ws".into() }
+fn default_true() -> bool { true }
+fn default_engine() -> String { "own".into() }
+
+impl Default for BridgeProfile {
     fn default() -> Self {
-        BridgeConfig {
+        BridgeProfile {
+            id: gen_id(),
+            name: default_name(),
             server: default_server(),
             token: String::new(),
+            device: String::new(),
+            auto_start: true,
             browser: true,
             engine: default_engine(),
             headless: false,
             shell: false,
-            device: String::new(),
         }
     }
 }
 
 fn config_dir() -> std::path::PathBuf {
-    let home = dirs_home();
-    home.join(".tianshu-bridge")
+    dirs_home().join(".tianshu-bridge")
 }
 fn config_path() -> std::path::PathBuf {
     config_dir().join("config.json")
+}
+fn log_path_for(profile_id: &str) -> std::path::PathBuf {
+    config_dir().join(format!("bridge-{}.log", profile_id))
 }
 fn log_path() -> std::path::PathBuf {
     config_dir().join("bridge.log")
 }
 
-/// Read lines from a pipe, prepend [epoch] timestamp, append to log file.
+fn dirs_home() -> std::path::PathBuf {
+    #[cfg(windows)]
+    { if let Ok(p) = std::env::var("USERPROFILE") { return std::path::PathBuf::from(p); } }
+    if let Ok(p) = std::env::var("HOME") { return std::path::PathBuf::from(p); }
+    std::path::PathBuf::from(".")
+}
+
+fn load_config_file() -> MultiConfig {
+    let path = config_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return MultiConfig { profiles: vec![] },
+    };
+
+    // Try new multi-profile format first
+    if let Ok(cfg) = serde_json::from_str::<MultiConfig>(&content) {
+        if !cfg.profiles.is_empty() {
+            return cfg;
+        }
+    }
+
+    // Try legacy single-profile format → migrate
+    if let Ok(legacy) = serde_json::from_str::<LegacyConfig>(&content) {
+        if let Some(server) = legacy.server {
+            let profile = BridgeProfile {
+                id: gen_id(),
+                name: "Default".into(),
+                server,
+                token: legacy.token.unwrap_or_default(),
+                device: legacy.device.unwrap_or_default(),
+                auto_start: true,
+                browser: legacy.browser.unwrap_or(true),
+                engine: legacy.engine.unwrap_or_else(default_engine),
+                headless: legacy.headless.unwrap_or(false),
+                shell: legacy.shell.unwrap_or(false),
+            };
+            let cfg = MultiConfig { profiles: vec![profile] };
+            let _ = save_config_file(&cfg);
+            return cfg;
+        }
+    }
+
+    MultiConfig { profiles: vec![] }
+}
+
+fn save_config_file(cfg: &MultiConfig) -> Result<(), String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(config_path(), json).map_err(|e| e.to_string())
+}
+
+// ─── trace logging ──────────────────────────────────────────────────
+
+fn trace_log(msg: &str) {
+    use std::io::Write;
+    let dir = config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true).open(dir.join("tray.log"))
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+}
+
 fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path) {
     use std::io::{BufRead, BufReader, Write};
     let reader = BufReader::new(pipe);
@@ -90,87 +196,29 @@ fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path) {
         if line.is_empty() { continue; }
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map(|d| d.as_secs()).unwrap_or(0);
         if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
+            .create(true).append(true).open(path)
         {
             let _ = writeln!(f, "[{}] {}", ts, line);
         }
     }
 }
 
-/// Always-on diagnostic log for the app itself (tray clicks, spawn
-/// attempts, resolved paths, errors) — written even when the bridge
-/// child never starts, unlike bridge.log.
-fn trace_log(msg: &str) {
-    use std::io::Write;
-    let dir = config_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("tray.log"))
-    {
-        let _ = writeln!(
-            f,
-            "[{}] {}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            msg
-        );
-    }
-}
-
-/// Cross-platform home dir without pulling the `dirs` crate.
-fn dirs_home() -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
-        if let Ok(p) = std::env::var("USERPROFILE") {
-            return std::path::PathBuf::from(p);
-        }
-    }
-    if let Ok(p) = std::env::var("HOME") {
-        return std::path::PathBuf::from(p);
-    }
-    std::path::PathBuf::from(".")
-}
-
-fn load_config_file() -> BridgeConfig {
-    match std::fs::read_to_string(config_path()) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => BridgeConfig::default(),
-    }
-}
-
-fn save_config_file(cfg: &BridgeConfig) -> Result<(), String> {
-    let dir = config_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(), json).map_err(|e| e.to_string())
-}
-
-// ─── bridge child process ───────────────────────────────────────────
+// ─── bridge state (multi-profile) ───────────────────────────────────
 
 #[derive(Default)]
 struct BridgeState {
-    child: Mutex<Option<Child>>,
+    children: Mutex<HashMap<String, Child>>,
 }
 
 impl BridgeState {
-    fn running(&self) -> bool {
-        let mut guard = self.child.lock().unwrap();
-        if let Some(child) = guard.as_mut() {
+    fn is_running(&self, profile_id: &str) -> bool {
+        let mut guard = self.children.lock().unwrap();
+        if let Some(child) = guard.get_mut(profile_id) {
             match child.try_wait() {
-                Ok(Some(_)) => {
-                    *guard = None; // exited
-                    false
-                }
-                Ok(None) => true, // still running
+                Ok(Some(_)) => { guard.remove(profile_id); false }
+                Ok(None) => true,
                 Err(_) => false,
             }
         } else {
@@ -178,199 +226,170 @@ impl BridgeState {
         }
     }
 
-    fn start(&self, cfg: &BridgeConfig, app: &tauri::AppHandle) -> Result<(), String> {
-        trace_log(&format!("start() called; server={}", cfg.server));
-        self.stop();
-        // Archive previous logs before starting fresh.
-        archive_logs();
-        let mut args: Vec<String> = vec!["--server".into(), cfg.server.clone()];
-        if !cfg.token.is_empty() {
-            args.push("--token".into());
-            args.push(cfg.token.clone());
+    fn any_running(&self) -> bool {
+        let mut guard = self.children.lock().unwrap();
+        let mut dead = vec![];
+        for (id, child) in guard.iter_mut() {
+            if let Ok(Some(_)) = child.try_wait() { dead.push(id.clone()); }
         }
-        if cfg.browser {
-            if cfg.engine == "stealth" {
-                args.push("--browser-engine".into());
-                args.push("stealth".into());
-            }
-            if cfg.headless {
-                args.push("--headless".into());
-            }
+        for id in dead { guard.remove(&id); }
+        !guard.is_empty()
+    }
+
+    fn running_ids(&self) -> Vec<String> {
+        let mut guard = self.children.lock().unwrap();
+        let mut dead = vec![];
+        for (id, child) in guard.iter_mut() {
+            if let Ok(Some(_)) = child.try_wait() { dead.push(id.clone()); }
+        }
+        for id in &dead { guard.remove(id); }
+        guard.keys().cloned().collect()
+    }
+
+    fn start(&self, profile: &BridgeProfile, app: &tauri::AppHandle) -> Result<(), String> {
+        trace_log(&format!("start({}) server={}", profile.name, profile.server));
+        self.stop(&profile.id);
+
+        let mut args: Vec<String> = vec!["--server".into(), profile.server.clone()];
+        if !profile.token.is_empty() { args.push("--token".into()); args.push(profile.token.clone()); }
+        if profile.browser {
+            if profile.engine == "stealth" { args.push("--browser-engine".into()); args.push("stealth".into()); }
+            if profile.headless { args.push("--headless".into()); }
         } else {
             args.push("--no-browser".into());
         }
-        if cfg.shell {
-            args.push("--shell".into());
-        }
-        if !cfg.device.is_empty() {
-            args.push("--device".into());
-            args.push(cfg.device.clone());
-        }
+        if profile.shell { args.push("--shell".into()); }
+        if !profile.device.is_empty() { args.push("--device".into()); args.push(profile.device.clone()); }
 
-        // We'll pipe stdout/stderr and prepend timestamps in a bg thread.
-
-        let (cmd, mut pre_args) = match bridge_command(app) {
-            Ok(v) => v,
-            Err(e) => {
-                trace_log(&format!("bridge_command failed: {e}"));
-                return Err(e);
-            }
-        };
-        // pre_args already contains the bridge entry .js when using the
-        // Node sidecar; append the bridge CLI flags after it.
+        let (cmd, mut pre_args) = bridge_command(app)?;
         pre_args.extend(args);
         trace_log(&format!("spawning: {} {:?}", cmd, pre_args));
+
         let mut command = Command::new(&cmd);
         command.args(&pre_args);
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
         #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW: don't pop a console for the bridge child.
-            command.creation_flags(0x0800_0000);
-        }
-        let mut child = match command.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("spawn failed: {e} (cmd={cmd})");
-                trace_log(&msg);
-                return Err(msg);
-            }
-        };
-        trace_log(&format!("spawned pid={:?}", child.id()));
+        { use std::os::windows::process::CommandExt; command.creation_flags(0x0800_0000); }
 
-        // Spawn background threads to read stdout/stderr, prepend [epoch]
-        // timestamps, and append to bridge.log.
-        let log_path = log_path();
+        let mut child = command.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+        trace_log(&format!("spawned pid={:?} for {}", child.id(), profile.name));
+
+        let log = log_path_for(&profile.id);
         if let Some(stdout) = child.stdout.take() {
-            let p = log_path.clone();
+            let p = log.clone();
             std::thread::spawn(move || timestamped_pipe(stdout, &p));
         }
         if let Some(stderr) = child.stderr.take() {
-            let p = log_path.clone();
+            let p = log.clone();
             std::thread::spawn(move || timestamped_pipe(stderr, &p));
         }
 
-        *self.child.lock().unwrap() = Some(child);
+        self.children.lock().unwrap().insert(profile.id.clone(), child);
         Ok(())
     }
 
-    fn stop(&self) {
-        let mut guard = self.child.lock().unwrap();
-        if let Some(mut child) = guard.take() {
-            // Send SIGTERM first so the bridge can close the WS
-            // connection gracefully (server detects disconnect immediately).
+    fn stop(&self, profile_id: &str) {
+        let mut guard = self.children.lock().unwrap();
+        if let Some(mut child) = guard.remove(profile_id) {
             #[cfg(unix)]
-            {
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGTERM);
-                }
-            }
+            { unsafe { libc::kill(child.id() as i32, libc::SIGTERM); } }
             #[cfg(windows)]
-            {
-                // Windows: no SIGTERM; kill() sends TerminateProcess.
+            { let _ = child.kill(); }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Ok(None) = child.try_wait() {
                 let _ = child.kill();
-            }
-            // Give it a moment to shut down gracefully, then force-kill.
-            match child.try_wait() {
-                Ok(Some(_)) => {} // already exited
-                _ => {
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                    match child.try_wait() {
-                        Ok(Some(_)) => {}
-                        _ => {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
-                    }
-                }
+                let _ = child.wait();
             }
         }
     }
+
+    fn stop_all(&self) {
+        let ids: Vec<String> = self.children.lock().unwrap().keys().cloned().collect();
+        for id in ids { self.stop(&id); }
+    }
 }
 
-/// Resolve how to launch the bundled bridge.
-///
-/// The app is self-contained: it ships a Node runtime as a Tauri sidecar
-/// binary and the bridge's compiled JS as a bundled resource. We run
-/// `<node-sidecar> <resources>/bridge/index.js`. No global `tsbridge`,
-/// no npm install by the user.
-///
-/// Dev override: set BRIDGE_ENTRY (+ optional BRIDGE_NODE) to point at a
-/// checkout's dist so you can iterate without rebundling.
 fn bridge_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
-    // Dev override.
     if let Ok(entry) = std::env::var("BRIDGE_ENTRY") {
         let node = std::env::var("BRIDGE_NODE").unwrap_or_else(|_| "node".into());
         return Ok((node, vec![entry]));
     }
-
-    // Node sidecar: Tauri places externalBin next to the app executable,
-    // named plainly (`node` / `node.exe`) after stripping the triple.
     let node = std::env::current_exe()
         .map(|p| p.with_file_name(node_bin_name()))
         .map_err(|e| e.to_string())?;
-
-    // Bridge entry JS: bundled resource resources/bridge/index.js.
-    let entry = app
-        .path()
+    let entry = app.path()
         .resolve("resources/bridge/index.js", tauri::path::BaseDirectory::Resource)
         .map_err(|e| format!("bridge payload not found: {e}"))?;
-
-    let node_str = node.to_string_lossy().to_string();
-    let entry_str = entry.to_string_lossy().to_string();
-    trace_log(&format!(
-        "bridge_command: node={} (exists={}) entry={} (exists={})",
-        node_str,
-        node.exists(),
-        entry_str,
-        entry.exists()
-    ));
-    Ok((node_str, vec![entry_str]))
+    Ok((node.to_string_lossy().to_string(), vec![entry.to_string_lossy().to_string()]))
 }
 
 fn node_bin_name() -> &'static str {
-    #[cfg(windows)]
-    {
-        "node.exe"
-    }
-    #[cfg(not(windows))]
-    {
-        "node"
-    }
+    #[cfg(windows)] { "node.exe" }
+    #[cfg(not(windows))] { "node" }
 }
 
-// ─── invoke commands (called from the UI) ───────────────────────────
+// ─── invoke commands ────────────────────────────────────────────────
 
 #[tauri::command]
-fn load_config() -> BridgeConfig {
+fn load_config() -> MultiConfig {
     load_config_file()
 }
 
 #[tauri::command]
-fn save_config(cfg: BridgeConfig) -> Result<(), String> {
+fn save_config(cfg: MultiConfig) -> Result<(), String> {
     save_config_file(&cfg)
 }
 
 #[tauri::command]
-fn start_bridge(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
+fn start_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
     let cfg = load_config_file();
-    state.start(&cfg, &app)?;
-    let _ = app.emit("bridge-status", true);
+    let profile = cfg.profiles.iter().find(|p| p.id == id)
+        .ok_or_else(|| format!("profile not found: {id}"))?;
+    state.start(profile, &app)?;
+    let _ = app.emit("bridge-status-changed", ());
     Ok(())
 }
 
 #[tauri::command]
-fn stop_bridge(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
-    state.stop();
-    let _ = app.emit("bridge-status", false);
+fn stop_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
+    state.stop(&id);
+    let _ = app.emit("bridge-status-changed", ());
     Ok(())
 }
 
 #[tauri::command]
-fn bridge_status(state: State<BridgeState>) -> bool {
-    state.running()
+fn start_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
+    let cfg = load_config_file();
+    for p in &cfg.profiles { let _ = state.start(p, &app); }
+    let _ = app.emit("bridge-status-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
+    state.stop_all();
+    let _ = app.emit("bridge-status-changed", ());
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ProfileStatusInfo {
+    id: String,
+    name: String,
+    server: String,
+    running: bool,
+}
+
+#[tauri::command]
+fn get_status(state: State<BridgeState>) -> Vec<ProfileStatusInfo> {
+    let cfg = load_config_file();
+    cfg.profiles.iter().map(|p| ProfileStatusInfo {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        server: p.server.clone(),
+        running: state.is_running(&p.id),
+    }).collect()
 }
 
 #[tauri::command]
@@ -378,112 +397,55 @@ fn hide_window(window: tauri::WebviewWindow) {
     let _ = window.hide();
 }
 
-/// Archive current logs to a dated file and start fresh.
-fn archive_logs() {
-    let dir = config_dir();
-    let now = chrono_now();
-    let archive_dir = dir.join("archives");
-    let _ = std::fs::create_dir_all(&archive_dir);
-    for file in ["tray.log", "bridge.log"] {
-        let src = dir.join(file);
-        if src.exists() {
-            let stem = file.trim_end_matches(".log");
-            let dest = archive_dir.join(format!("{}-{}.log", stem, now));
-            let _ = std::fs::rename(&src, &dest);
-        }
-    }
-}
-
-/// Returns YYYY-MM-DD_HH-MM-SS in local time.
-fn chrono_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
-    // Simple UTC+8 offset (good enough for local archiving).
-    let local = secs + 8 * 3600;
-    let days = local / 86400;
-    let time_of_day = local % 86400;
-    // Days since 1970-01-01 → date.
-    let (y, m, d) = days_to_ymd(days);
-    let hh = time_of_day / 3600;
-    let mm = (time_of_day % 3600) / 60;
-    let ss = time_of_day % 60;
-    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", y, m, d, hh, mm, ss)
-}
-
-fn days_to_ymd(days: i64) -> (i64, i64, i64) {
-    // Civil days from epoch algorithm (Howard Hinnant).
-    let z = days + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// Clear all current logs (called from UI).
-#[tauri::command]
-fn clear_logs() {
-    let dir = config_dir();
-    for file in ["tray.log", "bridge.log"] {
-        let _ = std::fs::remove_file(dir.join(file));
-    }
-}
-
-/// Read the last N lines from tray.log + bridge.log, returning them
-/// as a combined vec sorted by timestamp. Each entry has {ts, source, line}.
-#[tauri::command]
-fn read_logs(max_lines: Option<usize>) -> Vec<LogEntry> {
-    let limit = max_lines.unwrap_or(500);
-    let dir = config_dir();
-    let mut entries = Vec::new();
-    for (file, source) in [("tray.log", "tray"), ("bridge.log", "bridge")] {
-        let path = dir.join(file);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            for line in content.lines() {
-                let (ts, text) = parse_log_line(line);
-                entries.push(LogEntry {
-                    ts,
-                    source: source.to_string(),
-                    text: text.to_string(),
-                });
-            }
-        }
-    }
-    // Sort by timestamp descending (newest first), take limit.
-    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
-    entries.truncate(limit);
-    entries
-}
-
 #[derive(Clone, Serialize)]
-struct LogEntry {
-    ts: u64,
-    source: String,
-    text: String,
-}
+struct LogEntry { ts: u64, source: String, text: String }
 
-/// Parse a log line like "[1784996365] some text" → (timestamp, text).
-/// bridge.log lines have no timestamp wrapper, so ts=0 for those.
 fn parse_log_line(line: &str) -> (u64, &str) {
     if line.starts_with('[') {
         if let Some(end) = line.find(']') {
             if let Ok(ts) = line[1..end].parse::<u64>() {
-                let text = line[end + 1..].trim_start();
-                return (ts, text);
+                return (ts, line[end + 1..].trim_start());
             }
         }
     }
     (0, line)
 }
 
-// ─── app setup: tray + window ───────────────────────────────────────
+#[tauri::command]
+fn read_logs(max_lines: Option<usize>) -> Vec<LogEntry> {
+    let limit = max_lines.unwrap_or(500);
+    let dir = config_dir();
+    let mut entries = Vec::new();
+    // Read tray.log + all bridge-*.log files
+    for entry in std::fs::read_dir(&dir).into_iter().flatten() {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".log") { continue; }
+        let source = name.trim_end_matches(".log").to_string();
+        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+            for line in content.lines() {
+                let (ts, text) = parse_log_line(line);
+                entries.push(LogEntry { ts, source: source.clone(), text: text.to_string() });
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+    entries.truncate(limit);
+    entries
+}
+
+#[tauri::command]
+fn clear_logs() {
+    let dir = config_dir();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten() {
+        let Ok(entry) = entry else { continue };
+        if entry.file_name().to_string_lossy().ends_with(".log") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+// ─── tray setup ─────────────────────────────────────────────────────
 
 fn main() {
     tauri::Builder::default()
@@ -493,31 +455,41 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
-            start_bridge,
-            stop_bridge,
-            bridge_status,
+            start_profile,
+            stop_profile,
+            start_all,
+            stop_all,
+            get_status,
             hide_window,
             read_logs,
             clear_logs,
         ])
         .setup(|app| {
-            // Tray menu: Settings / Start / Stop / Quit.
+            let cfg = load_config_file();
+            let profile_count = cfg.profiles.len();
+
+            // Build tray menu
+            let status_i = MenuItem::with_id(app, "status",
+                &format!("{} profile(s) configured", profile_count), false, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let status_i = MenuItem::with_id(app, "status", "\u{25cb} Stopped", false, None::<&str>)?;
-            let start_i = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;
-            let stop_i = MenuItem::with_id(app, "stop", "Stop", false, None::<&str>)?;
+            let start_all_i = MenuItem::with_id(app, "start_all", "Start All", true, None::<&str>)?;
+            let stop_all_i = MenuItem::with_id(app, "stop_all", "Stop All", true, None::<&str>)?;
             let logs_i = MenuItem::with_id(app, "logs", "View Logs…", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status_i, &settings_i, &start_i, &stop_i, &logs_i, &quit_i])?;
-            let start_ref = Arc::new(start_i);
-            let stop_ref = Arc::new(stop_i);
-            let status_ref = Arc::new(status_i);
-            let start_c = Arc::clone(&start_ref);
-            let stop_c = Arc::clone(&stop_ref);
-            let status_c = Arc::clone(&status_ref);
+            let sep = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
+
+            let menu = Menu::with_items(app, &[
+                &status_i, &sep,
+                &start_all_i, &stop_all_i, &sep2,
+                &settings_i, &logs_i, &sep3,
+                &quit_i,
+            ])?;
 
             let icon_stopped = tauri::image::Image::from_bytes(ICON_STOPPED_PNG)
                 .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
+
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(icon_stopped)
                 .menu(&menu)
@@ -535,58 +507,41 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
-                    "start" => {
-                        trace_log("tray: Start clicked");
+                    "start_all" => {
                         let state = app.state::<BridgeState>();
                         let cfg = load_config_file();
-                        match state.start(&cfg, app) {
-                            Ok(()) => {
-                                let _ = app.emit("bridge-status", true);
-                                let _ = start_c.set_enabled(false);
-                                let _ = stop_c.set_enabled(true);
-                                let _ = status_c.set_text("\u{25cf} Running");
-                                if let Some(tray) = app.tray_by_id("main") {
-                                    if let Ok(img) = tauri::image::Image::from_bytes(ICON_RUNNING_PNG) {
-                                        let _ = tray.set_icon(Some(img));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                trace_log(&format!("tray Start error: {e}"));
-                                let _ = status_c.set_text("\u{25cb} Start failed");
-                            }
-                        }
+                        for p in &cfg.profiles { let _ = state.start(p, app); }
+                        let _ = app.emit("bridge-status-changed", ());
                     }
-                    "stop" => {
+                    "stop_all" => {
                         let state = app.state::<BridgeState>();
-                        state.stop();
-                        let _ = app.emit("bridge-status", false);
-                        let _ = start_c.set_enabled(true);
-                        let _ = stop_c.set_enabled(false);
-                        let _ = status_c.set_text("\u{25cb} Stopped");
-                        if let Some(tray) = app.tray_by_id("main") {
-                            if let Ok(img) = tauri::image::Image::from_bytes(ICON_STOPPED_PNG) {
-                                let _ = tray.set_icon(Some(img));
-                            }
-                        }
+                        state.stop_all();
+                        let _ = app.emit("bridge-status-changed", ());
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
-                        state.stop();
+                        state.stop_all();
                         app.exit(0);
                     }
                     _ => {}
                 })
                 .build(app)?;
 
-            // Start hidden: the app lives in the tray. The window shows
-            // only when the user picks Settings.
+            // Hide settings window on start
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.hide();
             }
+
+            // Auto-start profiles
+            let state = app.state::<BridgeState>();
+            for p in &cfg.profiles {
+                if p.auto_start {
+                    let _ = state.start(p, app.handle());
+                }
+            }
+
             Ok(())
         })
-        // Closing the settings window hides it instead of quitting.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();

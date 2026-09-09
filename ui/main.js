@@ -1,44 +1,12 @@
-// Frontend for the Tauri settings window. This window is config-only:
-// start/stop happen from the tray menu. Talks to the Rust backend via
-// Tauri's invoke() commands: load_config / save_config.
+// Multi-profile settings UI for Tianshu Bridge desktop app.
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
+const listen = tauri?.event?.listen;
 const readClipboard = tauri?.clipboardManager?.readText;
-
 const $ = (id) => document.getElementById(id);
 
-if (!invoke) {
-  // Should not happen once withGlobalTauri is on, but fail loud instead
-  // of every button silently doing nothing.
-  document.addEventListener("DOMContentLoaded", () => {
-    const b = document.createElement("div");
-    b.style.cssText = "padding:10px;color:#b91c1c;font-size:12px";
-    b.textContent = "Tauri API unavailable (window.__TAURI__ missing).";
-    document.body.prepend(b);
-  });
-}
-
-function readForm() {
-  return {
-    server: $("server").value.trim(),
-    token: $("token").value,
-    device: $("device").value.trim(),
-    browser: $("browser").checked,
-    engine: $("engine").value,
-    headless: $("headless").checked,
-    shell: $("shell").checked,
-  };
-}
-
-function writeForm(cfg) {
-  $("server").value = cfg.server ?? "";
-  $("token").value = cfg.token ?? "";
-  $("device").value = cfg.device ?? "";
-  $("browser").checked = !!cfg.browser;
-  $("engine").value = cfg.engine === "stealth" ? "stealth" : "own";
-  $("headless").checked = !!cfg.headless;
-  $("shell").checked = !!cfg.shell;
-}
+let config = { profiles: [] };
+let statuses = {}; // id → running bool
 
 function flash(text, level = "info") {
   const t = $("toast");
@@ -46,180 +14,193 @@ function flash(text, level = "info") {
   t.textContent = text;
   t.className = `toast ${level} visible`;
   clearTimeout(flash._t);
-  flash._t = setTimeout(() => {
-    t.classList.remove("visible");
-  }, 2500);
+  flash._t = setTimeout(() => t.classList.remove("visible"), 2500);
 }
 
-// Parse a pasted config into a partial form object. Accepts:
-//   - a `tsbridge://configure?server=…&token=…&…` deep link
-//     (the format the Tianshu panel copies)
-//   - a `tsbridge --server X --token Y --shell --browser-engine stealth` line
-//   - a JSON object { server, token, ... }
-//   - a bare "wss://host/ws <token>" pair
-function parseConfig(raw) {
-  const text = (raw || "").trim();
-  if (!text) return null;
-
-  // tsbridge://configure?… deep link (Tianshu panel format).
-  if (/^tsbridge:\/\//i.test(text)) {
-    let q;
-    try {
-      // Normalise to a parseable URL; the query is what matters.
-      const u = new URL(text);
-      q = u.searchParams;
-    } catch {
-      // Fallback: grab the query string manually.
-      const qs = text.split("?")[1] || "";
-      q = new URLSearchParams(qs);
-    }
-    const out = {};
-    const bool = (v) => v === "1" || v === "true" || v === "yes";
-    if (q.has("server")) out.server = q.get("server");
-    if (q.has("token")) out.token = q.get("token");
-    if (q.has("device")) out.device = q.get("device");
-    if (q.has("engine")) out.engine = q.get("engine");
-    if (q.has("browser")) out.browser = bool(q.get("browser"));
-    if (q.has("headless")) out.headless = bool(q.get("headless"));
-    if (q.has("shell")) out.shell = bool(q.get("shell"));
-    return out;
-  }
-
-  // JSON?
-  if (text.startsWith("{")) {
-    try {
-      const o = JSON.parse(text);
-      return o && typeof o === "object" ? o : null;
-    } catch {
-      /* fall through */
-    }
-  }
-
-  // Command-line flags?
-  if (text.includes("--server") || text.includes("--token")) {
-    const toks = text.match(/"[^"]*"|'[^']*'|\S+/g) || [];
-    const strip = (s) => s.replace(/^['"]|['"]$/g, "");
-    const out = {};
-    for (let i = 0; i < toks.length; i++) {
-      const t = toks[i];
-      const next = () => strip(toks[++i] ?? "");
-      if (t === "--server") out.server = next();
-      else if (t === "--token") out.token = next();
-      else if (t === "--device") out.device = next();
-      else if (t === "--browser-engine") out.engine = next();
-      else if (t === "--headless") out.headless = true;
-      else if (t === "--shell") out.shell = true;
-      else if (t === "--no-browser") out.browser = false;
-    }
-    // Presence of --server without --no-browser implies browser on.
-    if (out.browser === undefined) out.browser = true;
-    return out;
-  }
-
-  // Bare "server [token]".
-  const parts = text.split(/\s+/);
-  if (/^wss?:\/\//i.test(parts[0])) {
-    return { server: parts[0], token: parts[1] || "" };
-  }
-  return null;
+function genId() {
+  return "p_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
 }
 
-// Merge a parsed partial onto the current form (only overwrite provided
-// fields).
-function applyParsed(p) {
-  const cur = readForm();
-  const merged = {
-    server: p.server ?? cur.server,
-    token: p.token ?? cur.token,
-    device: p.device ?? cur.device,
-    browser: p.browser ?? cur.browser,
-    engine: p.engine ?? cur.engine,
-    headless: p.headless ?? cur.headless,
-    shell: p.shell ?? cur.shell,
-  };
-  writeForm(merged);
-}
-
-// Tauri's WebView doesn't wire up the standard edit shortcuts by default
-// (notably Ctrl/Cmd+V paste on Windows), so implement them for text
-// inputs manually. Covers cut / copy / paste / select-all.
-function installEditingShortcuts() {
-  document.addEventListener("keydown", async (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
-    const el = document.activeElement;
-    const isInput =
-      el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
-    if (!isInput) return;
-    const key = e.key.toLowerCase();
-    try {
-      if (key === "v") {
-        e.preventDefault();
-        const text = await navigator.clipboard.readText();
-        const s = el.selectionStart ?? el.value.length;
-        const en = el.selectionEnd ?? el.value.length;
-        el.value = el.value.slice(0, s) + text + el.value.slice(en);
-        const pos = s + text.length;
-        el.setSelectionRange(pos, pos);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else if (key === "c" || key === "x") {
-        const s = el.selectionStart ?? 0;
-        const en = el.selectionEnd ?? 0;
-        const sel = el.value.slice(s, en);
-        if (sel) {
-          e.preventDefault();
-          await navigator.clipboard.writeText(sel);
-          if (key === "x") {
-            el.value = el.value.slice(0, s) + el.value.slice(en);
-            el.setSelectionRange(s, s);
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-          }
+function renderProfiles() {
+  const list = $("profileList");
+  list.innerHTML = "";
+  if (config.profiles.length === 0) {
+    list.innerHTML = '<div style="color:#64748b;text-align:center;padding:20px;">No profiles. Add a server above.</div>';
+    return;
+  }
+  for (const p of config.profiles) {
+    const running = statuses[p.id] || false;
+    const card = document.createElement("div");
+    card.className = `profile-card${running ? " running" : ""}`;
+    card.innerHTML = `
+      <div class="profile-header">
+        <div class="status-dot${running ? " running" : ""}"></div>
+        <div class="profile-name">${esc(p.name)}</div>
+        <span style="font-size:10px;color:#64748b">${running ? "Connected" : "Stopped"}</span>
+      </div>
+      <div class="profile-server">${esc(p.server)}</div>
+      <div class="profile-actions">
+        ${running
+          ? `<button class="btn red" data-action="stop" data-id="${p.id}">Stop</button>`
+          : `<button class="btn green" data-action="start" data-id="${p.id}">Start</button>`
         }
-      } else if (key === "a") {
-        e.preventDefault();
-        el.select();
-      }
-    } catch (err) {
-      /* clipboard perms / no selection — ignore */
-    }
-  });
-}
-
-async function init() {
-  installEditingShortcuts();
-  try {
-    const cfg = await invoke("load_config");
-    writeForm(cfg);
-  } catch (e) {
-    console.error("load_config failed", e);
+        <button class="btn" data-action="edit" data-id="${p.id}">Edit</button>
+        <button class="btn danger" data-action="delete" data-id="${p.id}">Delete</button>
+      </div>
+      <div class="edit-form" id="edit-${p.id}">
+        <div class="form-row"><label>Name</label><input type="text" data-field="name" value="${esc(p.name)}"></div>
+        <div class="form-row"><label>Server</label><input type="text" data-field="server" value="${esc(p.server)}"></div>
+        <div class="form-row"><label>Token</label><input type="text" data-field="token" value="${esc(p.token || "")}"></div>
+        <div class="form-row"><label>Device</label><input type="text" data-field="device" value="${esc(p.device || "")}"></div>
+        <div class="form-row"><label>Engine</label>
+          <select data-field="engine">
+            <option value="own"${p.engine !== "stealth" ? " selected" : ""}>own (system Chrome)</option>
+            <option value="stealth"${p.engine === "stealth" ? " selected" : ""}>stealth (CloakBrowser)</option>
+          </select>
+        </div>
+        <div class="form-row"><label></label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label class="checkbox-row"><input type="checkbox" data-field="browser" ${p.browser !== false ? "checked" : ""}> Browser</label>
+            <label class="checkbox-row"><input type="checkbox" data-field="headless" ${p.headless ? "checked" : ""}> Headless</label>
+            <label class="checkbox-row"><input type="checkbox" data-field="shell" ${p.shell ? "checked" : ""}> Shell</label>
+            <label class="checkbox-row"><input type="checkbox" data-field="autoStart" ${p.auto_start !== false ? "checked" : ""}> Auto-start</label>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">
+          <button class="btn primary" data-action="save-edit" data-id="${p.id}">Save</button>
+          <button class="btn" data-action="cancel-edit" data-id="${p.id}">Cancel</button>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
   }
-
-  $("pasteBtn").addEventListener("click", async () => {
-    let raw = "";
-    try {
-      raw = readClipboard ? await readClipboard() : await navigator.clipboard.readText();
-    } catch {
-      flash("Clipboard unavailable", "error");
-      return;
-    }
-    const parsed = parseConfig(raw);
-    if (!parsed || (!parsed.server && !parsed.token)) {
-      flash("Couldn't parse clipboard \u2014 expected a tsbridge command, JSON, or wss:// URL", "warn");
-      return;
-    }
-    applyParsed(parsed);
-    flash("Config filled \u2014 review, then Save");
-  });
-
-  $("saveBtn").addEventListener("click", async () => {
-    await invoke("save_config", { cfg: readForm() });
-    $("saveBtn").textContent = "Saved \u2713";
-    setTimeout(() => invoke("hide_window"), 800);
-  });
-  $("hideBtn").addEventListener("click", async () => {
-    await invoke("hide_window");
-  });
-
 }
 
-init();
+function esc(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+
+async function refreshStatus() {
+  if (!invoke) return;
+  try {
+    const s = await invoke("get_status");
+    statuses = {};
+    for (const entry of s) statuses[entry.id] = entry.running;
+    renderProfiles();
+  } catch {}
+}
+
+async function loadAndRender() {
+  if (!invoke) return;
+  try {
+    config = await invoke("load_config");
+    if (!config.profiles) config.profiles = [];
+  } catch {}
+  await refreshStatus();
+}
+
+// Event delegation
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const id = btn.dataset.id;
+
+  if (action === "start") {
+    try { await invoke("start_profile", { id }); flash("Started"); } catch (e) { flash(String(e), "error"); }
+    await refreshStatus();
+  }
+  if (action === "stop") {
+    try { await invoke("stop_profile", { id }); flash("Stopped"); } catch (e) { flash(String(e), "error"); }
+    await refreshStatus();
+  }
+  if (action === "edit") {
+    const form = $(`edit-${id}`);
+    if (form) form.classList.toggle("visible");
+  }
+  if (action === "cancel-edit") {
+    const form = $(`edit-${id}`);
+    if (form) form.classList.remove("visible");
+  }
+  if (action === "save-edit") {
+    const form = $(`edit-${id}`);
+    if (!form) return;
+    const p = config.profiles.find((p) => p.id === id);
+    if (!p) return;
+    p.name = form.querySelector('[data-field="name"]').value;
+    p.server = form.querySelector('[data-field="server"]').value;
+    p.token = form.querySelector('[data-field="token"]').value;
+    p.device = form.querySelector('[data-field="device"]').value;
+    p.engine = form.querySelector('[data-field="engine"]').value;
+    p.browser = form.querySelector('[data-field="browser"]').checked;
+    p.headless = form.querySelector('[data-field="headless"]').checked;
+    p.shell = form.querySelector('[data-field="shell"]').checked;
+    p.auto_start = form.querySelector('[data-field="autoStart"]').checked;
+    try { await invoke("save_config", { cfg: config }); flash("Saved ✓"); } catch (e) { flash(String(e), "error"); }
+    renderProfiles();
+  }
+  if (action === "delete") {
+    config.profiles = config.profiles.filter((p) => p.id !== id);
+    try {
+      await invoke("stop_profile", { id }).catch(() => {});
+      await invoke("save_config", { cfg: config });
+      flash("Deleted");
+    } catch (e) { flash(String(e), "error"); }
+    await refreshStatus();
+  }
+});
+
+$("addBtn")?.addEventListener("click", async () => {
+  const server = $("newServer")?.value.trim();
+  if (!server) { flash("Enter a server URL", "error"); return; }
+  let name;
+  try { name = new URL(server).hostname; } catch { name = server; }
+  config.profiles.push({
+    id: genId(),
+    name,
+    server,
+    token: "",
+    device: "",
+    auto_start: true,
+    browser: true,
+    engine: "own",
+    headless: false,
+    shell: false,
+  });
+  try { await invoke("save_config", { cfg: config }); flash("Added " + name); } catch (e) { flash(String(e), "error"); }
+  $("newServer").value = "";
+  renderProfiles();
+});
+
+$("pasteBtn")?.addEventListener("click", async () => {
+  let raw = "";
+  try { raw = readClipboard ? await readClipboard() : await navigator.clipboard.readText(); } catch { flash("Clipboard unavailable", "error"); return; }
+  // Parse tsbridge://configure?server=...&token=... or JSON
+  let parsed = null;
+  if (/^tsbridge:\/\//i.test(raw)) {
+    try { const u = new URL(raw); parsed = { server: u.searchParams.get("server"), token: u.searchParams.get("token") }; } catch {}
+  } else if (raw.trim().startsWith("{")) {
+    try { parsed = JSON.parse(raw); } catch {}
+  } else if (/^wss?:\/\//i.test(raw.trim())) {
+    const parts = raw.trim().split(/\s+/);
+    parsed = { server: parts[0], token: parts[1] || "" };
+  }
+  if (!parsed?.server) { flash("Couldn't parse — expected tsbridge URL, JSON, or wss://", "error"); return; }
+  let name; try { name = new URL(parsed.server).hostname; } catch { name = parsed.server; }
+  config.profiles.push({
+    id: genId(), name, server: parsed.server, token: parsed.token || "",
+    device: parsed.device || "", auto_start: true,
+    browser: parsed.browser ?? true, engine: parsed.engine || "own",
+    headless: parsed.headless || false, shell: parsed.shell || false,
+  });
+  try { await invoke("save_config", { cfg: config }); flash("Added " + name + " from clipboard"); } catch (e) { flash(String(e), "error"); }
+  renderProfiles();
+});
+
+$("hideBtn")?.addEventListener("click", () => invoke?.("hide_window"));
+
+// Listen for status changes from the Rust backend
+listen?.("bridge-status-changed", () => refreshStatus());
+
+// Poll status periodically
+setInterval(refreshStatus, 3000);
+
+loadAndRender();
