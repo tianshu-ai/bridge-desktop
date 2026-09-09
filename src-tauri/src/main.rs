@@ -283,7 +283,7 @@ impl BridgeState {
 
     fn start(&self, profile: &BridgeProfile, app: &tauri::AppHandle) -> Result<(), String> {
         trace_log(&format!("start({}) server={}", profile.name, profile.server));
-        self.stop(&profile.id);
+        self.stop(&profile.id, Some(app));
 
         let mut args: Vec<String> = vec!["--server".into(), profile.server.clone()];
         if !profile.token.is_empty() { args.push("--token".into()); args.push(profile.token.clone()); }
@@ -330,7 +330,13 @@ impl BridgeState {
         if let Some(stdout) = child.stdout.take() {
             let p = log.clone();
             let cb = Some(Arc::clone(&activity_cb));
-            std::thread::spawn(move || timestamped_pipe(stdout, &p, cb));
+            let cb_exit = Arc::clone(&activity_cb);
+            std::thread::spawn(move || {
+                timestamped_pipe(stdout, &p, cb);
+                // Pipe closed = child exited. Reset activity to ensure
+                // we never get stuck on the active icon.
+                cb_exit(0);
+            });
         }
         if let Some(stderr) = child.stderr.take() {
             let p = log.clone();
@@ -341,7 +347,7 @@ impl BridgeState {
         Ok(())
     }
 
-    fn stop(&self, profile_id: &str) {
+    fn stop(&self, profile_id: &str, app: Option<&tauri::AppHandle>) {
         let mut guard = self.children.lock().unwrap();
         if let Some(mut child) = guard.remove(profile_id) {
             #[cfg(unix)]
@@ -354,11 +360,20 @@ impl BridgeState {
                 let _ = child.wait();
             }
         }
+        drop(guard);
+        // Reset icon after stop — ensures we never get stuck on active icon
+        if let Some(app) = app {
+            update_tray_icon_inner(self, app);
+        }
     }
 
-    fn stop_all(&self) {
+    fn stop_all(&self, app: Option<&tauri::AppHandle>) {
         let ids: Vec<String> = self.children.lock().unwrap().keys().cloned().collect();
-        for id in ids { self.stop(&id); }
+        for id in ids { self.stop(&id, None); }
+        // Reset icon once after all stopped
+        if let Some(app) = app {
+            update_tray_icon_inner(self, app);
+        }
     }
 }
 
@@ -406,9 +421,8 @@ fn start_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -
 
 #[tauri::command]
 fn stop_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
-    state.stop(&id);
+    state.stop(&id, Some(&app));
     let _ = app.emit("bridge-status-changed", ());
-    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -423,9 +437,8 @@ fn start_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), Str
 
 #[tauri::command]
 fn stop_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
-    state.stop_all();
+    state.stop_all(Some(&app));
     let _ = app.emit("bridge-status-changed", ());
-    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -601,13 +614,12 @@ fn main() {
                     }
                     "stop_all" => {
                         let state = app.state::<BridgeState>();
-                        state.stop_all();
+                        state.stop_all(Some(app));
                         let _ = app.emit("bridge-status-changed", ());
-                        update_tray_icon_inner(&state, app);
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
-                        state.stop_all();
+                        state.stop_all(None);
                         app.exit(0);
                     }
                     _ => {}
