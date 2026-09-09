@@ -1,6 +1,6 @@
 [package]
 name = "tianshu-bridge-desktop"
-version = "0.1.0"
+version = "0.3.0"
 description = "Tianshu Bridge desktop tray app"
 authors = ["tianshu-ai"]
 edition = "2021"
