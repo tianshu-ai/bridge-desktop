@@ -20,25 +20,51 @@ use tauri::{
     Emitter, Manager, State,
 };
 
-static ICON_STOPPED_PNG: &[u8] = include_bytes!("../icons/tray/stopped.png");
-static ICON_RUNNING_PNG: &[u8] = include_bytes!("../icons/tray/running.png");
-static ICON_RUNNING_1: &[u8] = include_bytes!("../icons/tray/running-1.png");
+static ICON_STOPPED: &[u8] = include_bytes!("../icons/tray/stopped.png");
+static ICON_RUNNING: &[u8] = include_bytes!("../icons/tray/running.png");
 static ICON_RUNNING_2: &[u8] = include_bytes!("../icons/tray/running-2.png");
 static ICON_RUNNING_3: &[u8] = include_bytes!("../icons/tray/running-3.png");
 static ICON_RUNNING_4: &[u8] = include_bytes!("../icons/tray/running-4.png");
 static ICON_RUNNING_5: &[u8] = include_bytes!("../icons/tray/running-5.png");
+// Active frames (no count badge — for 0 or 1 profile)
 static ICON_ACTIVE_1: &[u8] = include_bytes!("../icons/tray/active-1.png");
 static ICON_ACTIVE_2: &[u8] = include_bytes!("../icons/tray/active-2.png");
 static ICON_ACTIVE_3: &[u8] = include_bytes!("../icons/tray/active-3.png");
+// Active frames with count badges (2-5 profiles)
+static ICON_ACTIVE_1_C2: &[u8] = include_bytes!("../icons/tray/active-1-c2.png");
+static ICON_ACTIVE_2_C2: &[u8] = include_bytes!("../icons/tray/active-2-c2.png");
+static ICON_ACTIVE_3_C2: &[u8] = include_bytes!("../icons/tray/active-3-c2.png");
+static ICON_ACTIVE_1_C3: &[u8] = include_bytes!("../icons/tray/active-1-c3.png");
+static ICON_ACTIVE_2_C3: &[u8] = include_bytes!("../icons/tray/active-2-c3.png");
+static ICON_ACTIVE_3_C3: &[u8] = include_bytes!("../icons/tray/active-3-c3.png");
+static ICON_ACTIVE_1_C4: &[u8] = include_bytes!("../icons/tray/active-1-c4.png");
+static ICON_ACTIVE_2_C4: &[u8] = include_bytes!("../icons/tray/active-2-c4.png");
+static ICON_ACTIVE_3_C4: &[u8] = include_bytes!("../icons/tray/active-3-c4.png");
+static ICON_ACTIVE_1_C5: &[u8] = include_bytes!("../icons/tray/active-1-c5.png");
+static ICON_ACTIVE_2_C5: &[u8] = include_bytes!("../icons/tray/active-2-c5.png");
+static ICON_ACTIVE_3_C5: &[u8] = include_bytes!("../icons/tray/active-3-c5.png");
 
+/// Pick the idle icon for a given connected profile count.
 fn icon_for_count(n: usize) -> &'static [u8] {
     match n {
-        0 => ICON_STOPPED_PNG,
-        1 => ICON_RUNNING_1,
+        0 => ICON_STOPPED,
+        1 => ICON_RUNNING,    // no badge for 1
         2 => ICON_RUNNING_2,
         3 => ICON_RUNNING_3,
         4 => ICON_RUNNING_4,
         _ => ICON_RUNNING_5,
+    }
+}
+
+/// Pick the active (pulsing) icon for a given frame and profile count.
+fn icon_active(frame: usize, count: usize) -> &'static [u8] {
+    let f = frame % 3;
+    match count {
+        0 | 1 => [ICON_ACTIVE_1, ICON_ACTIVE_2, ICON_ACTIVE_3][f],
+        2 => [ICON_ACTIVE_1_C2, ICON_ACTIVE_2_C2, ICON_ACTIVE_3_C2][f],
+        3 => [ICON_ACTIVE_1_C3, ICON_ACTIVE_2_C3, ICON_ACTIVE_3_C3][f],
+        4 => [ICON_ACTIVE_1_C4, ICON_ACTIVE_2_C4, ICON_ACTIVE_3_C4][f],
+        _ => [ICON_ACTIVE_1_C5, ICON_ACTIVE_2_C5, ICON_ACTIVE_3_C5][f],
     }
 }
 
@@ -582,7 +608,7 @@ fn main() {
                 &quit_i,
             ])?;
 
-            let icon_stopped = tauri::image::Image::from_bytes(ICON_STOPPED_PNG)
+            let icon_stopped = tauri::image::Image::from_bytes(ICON_STOPPED)
                 .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
 
             let _tray = TrayIconBuilder::with_id("main")
@@ -646,6 +672,7 @@ fn main() {
             let was_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
             std::thread::spawn(move || {
                 const TIMEOUT_MS: u64 = 4000;
+                let mut frame: usize = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     let ts = poll_ts.load(Ordering::Relaxed);
@@ -653,20 +680,30 @@ fn main() {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64).unwrap_or(0);
                     let active = ts > 0 && (now - ts) < TIMEOUT_MS;
-                    let prev = was_active.swap(active, Ordering::Relaxed);
-                    if active != prev {
-                        // State changed — update icon
+                    let prev = was_active.load(Ordering::Relaxed);
+
+                    let s = poll_app.state::<BridgeState>();
+                    let count = s.running_ids().len();
+
+                    if active {
+                        // Animate: cycle through frames every 500ms
                         if let Some(tray) = poll_app.tray_by_id("main") {
-                            let icon_data = if active {
-                                ICON_ACTIVE_1
-                            } else {
-                                let s = poll_app.state::<BridgeState>();
-                                icon_for_count(s.running_ids().len())
-                            };
+                            let icon_data = icon_active(frame, count);
                             if let Ok(img) = tauri::image::Image::from_bytes(icon_data) {
                                 let _ = tray.set_icon(Some(img));
                             }
                         }
+                        frame += 1;
+                        was_active.store(true, Ordering::Relaxed);
+                    } else if prev {
+                        // Just became idle — restore static icon
+                        if let Some(tray) = poll_app.tray_by_id("main") {
+                            if let Ok(img) = tauri::image::Image::from_bytes(icon_for_count(count)) {
+                                let _ = tray.set_icon(Some(img));
+                            }
+                        }
+                        frame = 0;
+                        was_active.store(false, Ordering::Relaxed);
                     }
                 }
             });
