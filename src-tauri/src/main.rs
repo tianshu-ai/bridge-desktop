@@ -10,7 +10,7 @@ extern crate libc;
 
 use std::collections::HashMap;
 use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -245,6 +245,9 @@ fn timestamped_pipe(pipe: impl std::io::Read, path: &std::path::Path, on_activit
 #[derive(Default)]
 struct BridgeState {
     children: Mutex<HashMap<String, Child>>,
+    /// Epoch millis of last activity heartbeat from any bridge child.
+    /// 0 = idle. Checked by a 500ms timer to toggle the tray icon.
+    last_activity_ts: Arc<AtomicU64>,
 }
 
 impl BridgeState {
@@ -311,32 +314,26 @@ impl BridgeState {
         trace_log(&format!("spawned pid={:?} for {}", child.id(), profile.name));
 
         let log = log_path_for(&profile.id);
-        // Activity callback: update tray icon when tools start/finish.
-        // Clone the app handle so the bg thread can update the tray.
-        let app_clone = app.clone();
+        // Activity heartbeat: bridge sends active=1 every 2s while a tool
+        // is running, and active=0 on completion. We store the last
+        // heartbeat timestamp; a 4s timeout means "no longer active".
+        let last_active = Arc::clone(&self.last_activity_ts);
         let activity_cb: ActivityCallback = Arc::new(move |active: i32| {
-            if let Some(tray) = app_clone.tray_by_id("main") {
-                let icon_data = if active > 0 { ICON_ACTIVE_1 } else {
-                    // Count running profiles to pick the right numbered icon
-                    let state = app_clone.state::<BridgeState>();
-                    let count = state.running_ids().len();
-                    icon_for_count(count)
-                };
-                if let Ok(img) = tauri::image::Image::from_bytes(icon_data) {
-                    let _ = tray.set_icon(Some(img));
-                }
+            use std::sync::atomic::Ordering;
+            if active > 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64).unwrap_or(0);
+                last_active.store(now, Ordering::Relaxed);
+            } else {
+                // Tool done — clear immediately
+                last_active.store(0, Ordering::Relaxed);
             }
         });
         if let Some(stdout) = child.stdout.take() {
             let p = log.clone();
             let cb = Some(Arc::clone(&activity_cb));
-            let cb_exit = Arc::clone(&activity_cb);
-            std::thread::spawn(move || {
-                timestamped_pipe(stdout, &p, cb);
-                // Pipe closed = child exited. Reset activity to ensure
-                // we never get stuck on the active icon.
-                cb_exit(0);
-            });
+            std::thread::spawn(move || timestamped_pipe(stdout, &p, cb));
         }
         if let Some(stderr) = child.stderr.take() {
             let p = log.clone();
@@ -640,6 +637,39 @@ fn main() {
             }
             // Update icon after auto-starts
             update_tray_icon_inner(&state, app.handle());
+
+            // Poll activity heartbeat every 500ms to toggle tray icon.
+            // If last_activity_ts is >0 and within 4s → show active icon.
+            // If >4s stale or 0 → show normal count icon.
+            let poll_app = app.handle().clone();
+            let poll_ts = Arc::clone(&state.last_activity_ts);
+            let was_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            std::thread::spawn(move || {
+                const TIMEOUT_MS: u64 = 4000;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let ts = poll_ts.load(Ordering::Relaxed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64).unwrap_or(0);
+                    let active = ts > 0 && (now - ts) < TIMEOUT_MS;
+                    let prev = was_active.swap(active, Ordering::Relaxed);
+                    if active != prev {
+                        // State changed — update icon
+                        if let Some(tray) = poll_app.tray_by_id("main") {
+                            let icon_data = if active {
+                                ICON_ACTIVE_1
+                            } else {
+                                let s = poll_app.state::<BridgeState>();
+                                icon_for_count(s.running_ids().len())
+                            };
+                            if let Ok(img) = tauri::image::Image::from_bytes(icon_data) {
+                                let _ = tray.set_icon(Some(img));
+                            }
+                        }
+                    }
+                }
+            });
 
             Ok(())
         })
