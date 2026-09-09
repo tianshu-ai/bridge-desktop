@@ -22,6 +22,25 @@ use tauri::{
 
 static ICON_STOPPED_PNG: &[u8] = include_bytes!("../icons/tray/stopped.png");
 static ICON_RUNNING_PNG: &[u8] = include_bytes!("../icons/tray/running.png");
+static ICON_RUNNING_1: &[u8] = include_bytes!("../icons/tray/running-1.png");
+static ICON_RUNNING_2: &[u8] = include_bytes!("../icons/tray/running-2.png");
+static ICON_RUNNING_3: &[u8] = include_bytes!("../icons/tray/running-3.png");
+static ICON_RUNNING_4: &[u8] = include_bytes!("../icons/tray/running-4.png");
+static ICON_RUNNING_5: &[u8] = include_bytes!("../icons/tray/running-5.png");
+static ICON_ACTIVE_1: &[u8] = include_bytes!("../icons/tray/active-1.png");
+static ICON_ACTIVE_2: &[u8] = include_bytes!("../icons/tray/active-2.png");
+static ICON_ACTIVE_3: &[u8] = include_bytes!("../icons/tray/active-3.png");
+
+fn icon_for_count(n: usize) -> &'static [u8] {
+    match n {
+        0 => ICON_STOPPED_PNG,
+        1 => ICON_RUNNING_1,
+        2 => ICON_RUNNING_2,
+        3 => ICON_RUNNING_3,
+        4 => ICON_RUNNING_4,
+        _ => ICON_RUNNING_5,
+    }
+}
 
 // ─── config ─────────────────────────────────────────────────────────
 
@@ -348,6 +367,7 @@ fn start_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -
         .ok_or_else(|| format!("profile not found: {id}"))?;
     state.start(profile, &app)?;
     let _ = app.emit("bridge-status-changed", ());
+    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -355,6 +375,7 @@ fn start_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -
 fn stop_profile(id: String, state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
     state.stop(&id);
     let _ = app.emit("bridge-status-changed", ());
+    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -363,6 +384,7 @@ fn start_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), Str
     let cfg = load_config_file();
     for p in &cfg.profiles { let _ = state.start(p, &app); }
     let _ = app.emit("bridge-status-changed", ());
+    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -370,6 +392,7 @@ fn start_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), Str
 fn stop_all(state: State<BridgeState>, app: tauri::AppHandle) -> Result<(), String> {
     state.stop_all();
     let _ = app.emit("bridge-status-changed", ());
+    update_tray_icon_inner(&state, &app);
     Ok(())
 }
 
@@ -395,6 +418,34 @@ fn get_status(state: State<BridgeState>) -> Vec<ProfileStatusInfo> {
 #[tauri::command]
 fn hide_window(window: tauri::WebviewWindow) {
     let _ = window.hide();
+}
+
+fn update_tray_icon_inner(state: &BridgeState, app: &tauri::AppHandle) {
+    let count = state.running_ids().len();
+    if let Some(tray) = app.tray_by_id("main") {
+        if let Ok(img) = tauri::image::Image::from_bytes(icon_for_count(count)) {
+            let _ = tray.set_icon(Some(img));
+        }
+        let _ = tray.set_tooltip(Some(&format!(
+            "Tianshu Bridge: {}",
+            if count == 0 { "stopped".to_string() } else { format!("{count} connected") }
+        )));
+    }
+}
+
+/// Update tray icon to reflect how many profiles are running.
+#[tauri::command]
+fn update_tray_icon(state: State<BridgeState>, app: tauri::AppHandle) {
+    let count = state.running_ids().len();
+    if let Some(tray) = app.tray_by_id("main") {
+        if let Ok(img) = tauri::image::Image::from_bytes(icon_for_count(count)) {
+            let _ = tray.set_icon(Some(img));
+        }
+        let _ = tray.set_tooltip(Some(&format!(
+            "Tianshu Bridge: {}",
+            if count == 0 { "stopped".to_string() } else { format!("{count} connected") }
+        )));
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -461,6 +512,7 @@ fn main() {
             stop_all,
             get_status,
             hide_window,
+            update_tray_icon,
             read_logs,
             clear_logs,
         ])
@@ -512,11 +564,13 @@ fn main() {
                         let cfg = load_config_file();
                         for p in &cfg.profiles { let _ = state.start(p, app); }
                         let _ = app.emit("bridge-status-changed", ());
+                        update_tray_icon_inner(&state, app);
                     }
                     "stop_all" => {
                         let state = app.state::<BridgeState>();
                         state.stop_all();
                         let _ = app.emit("bridge-status-changed", ());
+                        update_tray_icon_inner(&state, app);
                     }
                     "quit" => {
                         let state = app.state::<BridgeState>();
@@ -539,6 +593,8 @@ fn main() {
                     let _ = state.start(p, app.handle());
                 }
             }
+            // Update icon after auto-starts
+            update_tray_icon_inner(&state, app.handle());
 
             Ok(())
         })
