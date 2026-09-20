@@ -82,8 +82,29 @@ async function refreshStatus() {
   if (!invoke) return;
   try {
     const s = await invoke("get_status");
-    statuses = {};
-    for (const entry of s) statuses[entry.id] = entry.running;
+    const nextStatuses = {};
+    for (const entry of s) nextStatuses[entry.id] = entry.running;
+
+    // Yu 2026-09-20 17:49 "bridge desktop 点开 edit 的时候一会儿就
+    // 会自动关闭": setInterval(refreshStatus, 3000) was calling
+    // renderProfiles() unconditionally every 3s. That blows away
+    // list.innerHTML including any open edit-form the user was
+    // typing into. Two changes:
+    //
+    //   1. If any edit-form is currently .visible, skip the re-render
+    //      entirely. Users can't be editing and expecting live
+    //      status updates on the same card simultaneously; keep the
+    //      form intact until they Save or Cancel.
+    //   2. If nothing changed status-wise, don't re-render at all.
+    //      Reduces flicker + avoids the same tear-down for
+    //      any interactive state (selection, hover, etc).
+    const editing = document.querySelector(".edit-form.visible");
+    const same =
+      Object.keys(statuses).length === Object.keys(nextStatuses).length &&
+      Object.keys(nextStatuses).every((k) => statuses[k] === nextStatuses[k]);
+    statuses = nextStatuses;
+    if (editing) return;
+    if (same) return;
     renderProfiles();
   } catch {}
 }
