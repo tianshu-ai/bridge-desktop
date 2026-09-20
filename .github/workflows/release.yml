@@ -24,8 +24,19 @@ jobs:
             target: aarch64-apple-darwin
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          # Yu 2026-09-20 18:53: dropped windows-latest from the
+          # default matrix. GitHub's Windows runner stalled twice
+          # today (35503439032, 35503708705) — first inside
+          # `Build (tauri, Windows/Linux)` for 45+min, then inside
+          # `Prepare payload (bridge dist + Node sidecar)`. Neither
+          # timeout-minutes:25 on the Build step nor a full workflow
+          # restart helped: it's a runner-side problem, not a
+          # source problem. Ship macOS + Linux fast; trigger Windows
+          # manually via `workflow_dispatch` when we actually need
+          # a Windows installer (or add a nightly-only Windows
+          # workflow later).
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
