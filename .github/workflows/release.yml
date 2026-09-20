@@ -72,10 +72,16 @@ jobs:
       # the re-signed .app as a zip instead.
       - name: Build (tauri, macOS → app only)
         if: runner.os == 'macOS'
+        timeout-minutes: 25
         run: npm run build -- --target ${{ matrix.target }} --bundles app
 
       - name: Build (tauri, Windows/Linux)
         if: runner.os != 'macOS'
+        # Yu 2026-09-20 18:35: Windows runner has stalled on this step
+        # for 45+ minutes before, blocking the whole release. Cap it at
+        # 25 minutes so a stuck Windows leg fails fast instead of
+        # holding macOS/Linux assets hostage.
+        timeout-minutes: 25
         run: npm run build -- --target ${{ matrix.target }}
 
       # macOS: the app ships an unsigned Node sidecar, which breaks the
@@ -126,9 +132,15 @@ jobs:
 
   # Publish a GitHub Release from the collected artifacts. Runs only for
   # main pushes (→ continuous prerelease) and tags (→ stable release).
+  #
+  # Yu 2026-09-20 18:35: use `if: always()` + `github.event_name ==
+  # 'push'` so this still runs when one matrix leg fails. With
+  # `fail-fast: false` on the matrix, Linux and macOS often finish
+  # successfully even if Windows stalls; we want their artifacts
+  # published rather than gated on Windows.
   release:
     needs: build
-    if: github.event_name == 'push'
+    if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
